@@ -1005,8 +1005,10 @@ func (r *SimpleKubeReconciler) ensurePod(ctx context.Context, namespace string, 
 	}
 
 	labels := sessionLabels(session.ID, session.ProjectID)
-	useMCPSidecar := r.cfg.MCPImage != "" && r.cfg.CPTokenURL != "" && r.cfg.CPTokenPublicKey != ""
-	if r.cfg.MCPImage != "" && !useMCPSidecar {
+	useMCPSidecar := r.cfg.MCPImage != "" && r.cfg.CPTokenURL != "" && r.cfg.CPTokenPublicKey != "" && !r.cfg.OpenShellUseGateway
+	if r.cfg.OpenShellUseGateway && r.cfg.MCPImage != "" {
+		r.logger.Debug().Str("session_id", session.ID).Msg("MCP sidecar disabled: OPENSHELL_USE_GATEWAY is enabled")
+	} else if r.cfg.MCPImage != "" && !useMCPSidecar {
 		r.logger.Warn().Str("session_id", session.ID).Msg("MCP sidecar disabled: CP_TOKEN_URL or CPTokenPublicKey not configured")
 	}
 
@@ -1045,7 +1047,7 @@ func (r *SimpleKubeReconciler) ensurePod(ctx context.Context, namespace string, 
 
 	credentialSidecarMode := false
 	var credTmpVolumes []interface{}
-	if r.cfg.CPTokenURL != "" && r.cfg.CPTokenPublicKey != "" {
+	if r.cfg.CPTokenURL != "" && r.cfg.CPTokenPublicKey != "" && !r.cfg.OpenShellUseGateway {
 		credSidecars, credMCPURLs, credTmpVols := r.buildCredentialSidecars(session.ID, namespace, credentialIDs, r.cfg.OpenShellEnabled)
 		credTmpVolumes = credTmpVols
 		containers = append(containers, credSidecars...)
