@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -167,7 +168,7 @@ func (s *PodStatusSyncer) syncSandboxStatus(ctx context.Context, sdk *sdkclient.
 		if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
 			if session.Phase == PhaseRunning || session.Phase == PhaseCreating {
 				s.logger.Warn().Str("session_id", session.ID).Str("sandbox", sbxName).Msg("sandbox not found, marking session failed")
-				s.updateSessionPhase(ctx, sdk, session, PhaseFailed)
+				s.updateSessionPhase(ctx, sdk, session, PhaseFailed, nil)
 			}
 			return
 		}
@@ -188,7 +189,7 @@ func (s *PodStatusSyncer) syncSandboxStatus(ctx context.Context, sdk *sdkclient.
 		desiredPhase = PhaseStopped
 	}
 
-	s.updateSessionPhase(ctx, sdk, session, desiredPhase)
+	s.updateSessionPhase(ctx, sdk, session, desiredPhase, nil)
 }
 
 func mapSandboxPhaseToSessionPhase(phase openshellpb.SandboxPhase) string {
@@ -240,7 +241,7 @@ func (s *PodStatusSyncer) syncPod(ctx context.Context, namespace string, pod *un
 		desiredSessionPhase = PhaseStopped
 	}
 
-	s.updateSessionPhase(ctx, sdk, session, desiredSessionPhase)
+	s.updateSessionPhase(ctx, sdk, session, desiredSessionPhase, pod)
 }
 
 func (s *PodStatusSyncer) mapPodPhaseToSessionPhase(podPhase string, pod *unstructured.Unstructured) string {
@@ -261,7 +262,7 @@ func (s *PodStatusSyncer) mapPodPhaseToSessionPhase(podPhase string, pod *unstru
 		if s.hasRunnerContainerExited(pod) {
 			return PhaseCompleted
 		}
-		return ""
+		return PhaseRunning
 	default:
 		return ""
 	}
@@ -345,12 +346,26 @@ func (s *PodStatusSyncer) hasContainerCrashLoop(pod *unstructured.Unstructured) 
 	return false
 }
 
-func (s *PodStatusSyncer) updateSessionPhase(ctx context.Context, sdk *sdkclient.Client, session *types.Session, newPhase string) {
+func (s *PodStatusSyncer) updateSessionPhase(ctx context.Context, sdk *sdkclient.Client, session *types.Session, newPhase string, pod *unstructured.Unstructured) {
 	patch := map[string]interface{}{"phase": newPhase}
+
+	if newPhase == PhaseRunning {
+		if session.StartTime == nil {
+			now := time.Now()
+			patch["start_time"] = &now
+		}
+		patch["conditions"] = emptyConditionsJSON
+	}
 
 	if newPhase == PhaseCompleted || newPhase == PhaseFailed || newPhase == PhaseStopped {
 		now := time.Now()
 		patch["completion_time"] = &now
+	}
+
+	if newPhase == PhaseFailed && pod != nil {
+		if conditionsJSON := s.buildFailureConditions(pod); conditionsJSON != "" {
+			patch["conditions"] = conditionsJSON
+		}
 	}
 
 	if _, err := sdk.Sessions().UpdateStatus(ctx, session.ID, patch); err != nil {
@@ -367,6 +382,71 @@ func (s *PodStatusSyncer) updateSessionPhase(ctx context.Context, sdk *sdkclient
 		Str("from_phase", session.Phase).
 		Str("to_phase", newPhase).
 		Msg("session phase updated from pod status")
+}
+
+func (s *PodStatusSyncer) buildFailureConditions(pod *unstructured.Unstructured) string {
+	var conditions []map[string]interface{}
+
+	for _, statusField := range []string{"containerStatuses", "initContainerStatuses"} {
+		statuses, found, _ := unstructured.NestedSlice(pod.Object, "status", statusField)
+		if !found {
+			continue
+		}
+		for _, cs := range statuses {
+			csMap, ok := cs.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if terminated, found, _ := unstructured.NestedMap(csMap, "state", "terminated"); found {
+				reason, _, _ := unstructured.NestedString(terminated, "reason")
+				message, _, _ := unstructured.NestedString(terminated, "message")
+				exitCode, _, _ := unstructured.NestedInt64(terminated, "exitCode")
+
+				if reason == "Error" || reason == "OOMKilled" || exitCode != 0 {
+					msg := message
+					if msg == "" {
+						msg = fmt.Sprintf("Session terminated with error (exit code %d)", exitCode)
+					}
+					conditions = append(conditions, map[string]interface{}{
+						"type":               "ContainerFailed",
+						"status":             "False",
+						"reason":             reason,
+						"message":            msg,
+						"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+					})
+				}
+			}
+
+			if waiting, found, _ := unstructured.NestedMap(csMap, "state", "waiting"); found {
+				reason, _, _ := unstructured.NestedString(waiting, "reason")
+				message, _, _ := unstructured.NestedString(waiting, "message")
+				if reason == "CrashLoopBackOff" || reason == "ImagePullBackOff" || reason == "ErrImagePull" {
+					msg := message
+					if msg == "" {
+						msg = "Session failed to start"
+					}
+					conditions = append(conditions, map[string]interface{}{
+						"type":               "ContainerFailed",
+						"status":             "False",
+						"reason":             "StartupFailed",
+						"message":            msg,
+						"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+					})
+				}
+			}
+		}
+	}
+
+	if len(conditions) == 0 {
+		return ""
+	}
+
+	data, err := json.Marshal(conditions)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal pod failure conditions")
+		return ""
+	}
+	return string(data)
 }
 
 func isTerminalPhase(phase string) bool {

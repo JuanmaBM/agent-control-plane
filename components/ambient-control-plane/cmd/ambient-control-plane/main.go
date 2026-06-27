@@ -217,7 +217,7 @@ func runKubeMode(ctx context.Context, cfg *config.ControlPlaneConfig) error {
 		log.Info().Msg("OpenShell gateway mode enabled")
 	}
 
-	sessionReconcilers := createSessionReconcilers(cfg.Reconcilers, factory, kube, projectKube, provisioner, gateway, kubeReconcilerCfg, log.Logger)
+	sessionReconcilers := createSessionReconcilers(cfg.Reconcilers, factory, kube, projectKube, provisioner, gateway, kubeReconcilerCfg, log.Logger, inf)
 	for _, sessionRec := range sessionReconcilers {
 		inf.RegisterHandler("sessions", sessionRec.Reconcile)
 	}
@@ -264,13 +264,14 @@ func startTokenServer(ctx context.Context, cfg *config.ControlPlaneConfig, token
 	return ts.Start(ctx)
 }
 
-func createSessionReconcilers(reconcilerTypes []string, factory *reconciler.SDKClientFactory, kube *kubeclient.KubeClient, projectKube *kubeclient.KubeClient, provisioner kubeclient.NamespaceProvisioner, gateway *openshell.GatewayClient, cfg reconciler.KubeReconcilerConfig, logger zerolog.Logger) []reconciler.Reconciler {
+func createSessionReconcilers(reconcilerTypes []string, factory *reconciler.SDKClientFactory, kube *kubeclient.KubeClient, projectKube *kubeclient.KubeClient, provisioner kubeclient.NamespaceProvisioner, gateway *openshell.GatewayClient, cfg reconciler.KubeReconcilerConfig, logger zerolog.Logger, inf *informer.Informer) []reconciler.Reconciler {
 	var reconcilers []reconciler.Reconciler
 
 	for _, reconcilerType := range reconcilerTypes {
 		switch reconcilerType {
 		case "kube":
 			kubeReconciler := reconciler.NewKubeReconciler(factory, kube, projectKube, provisioner, gateway, cfg, logger)
+			inf.OnMaxRetriesExceeded = kubeReconciler.HandleProvisioningFailure
 			reconcilers = append(reconcilers, kubeReconciler)
 			log.Info().Str("type", "kube").Msg("enabled direct Kubernetes session reconciler")
 		case "tally":

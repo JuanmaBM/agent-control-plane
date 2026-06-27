@@ -259,7 +259,7 @@ func (r *SimpleKubeReconciler) provisionSessionPod(ctx context.Context, session 
 		return fmt.Errorf("ensuring service: %w", err)
 	}
 
-	r.updateSessionPhaseWithNamespace(ctx, session, PhaseRunning, namespace)
+	r.updateSessionPhaseWithNamespace(ctx, session, PhaseCreating, namespace)
 	return nil
 }
 
@@ -1637,6 +1637,7 @@ func (r *SimpleKubeReconciler) updateSessionPhaseWithNamespace(ctx context.Conte
 		"phase":          newPhase,
 		"kube_namespace": namespace,
 		"start_time":     &now,
+		"conditions":     emptyConditionsJSON,
 	}
 
 	if _, err := sdk.Sessions().UpdateStatus(ctx, session.ID, patch); err != nil {
@@ -1688,6 +1689,91 @@ func (r *SimpleKubeReconciler) updateSessionPhase(ctx context.Context, session t
 		Str("old_phase", session.Phase).
 		Str("new_phase", newPhase).
 		Msg("session phase updated")
+}
+
+func (r *SimpleKubeReconciler) HandleProvisioningFailure(ctx context.Context, event informer.ResourceEvent, err error) {
+	eventSession := event.Object.Session
+	if eventSession == nil {
+		return
+	}
+
+	if eventSession.ProjectID == "" {
+		r.logger.Debug().Str("session_id", eventSession.ID).Msg("skipping failure update: no project_id")
+		return
+	}
+
+	sdk, sdkErr := r.factory.ForProject(ctx, eventSession.ProjectID)
+	if sdkErr != nil {
+		r.logger.Warn().Err(sdkErr).Str("session_id", eventSession.ID).Msg("failed to get SDK client for failure update")
+		return
+	}
+
+	session, fetchErr := sdk.Sessions().Get(ctx, eventSession.ID)
+	if fetchErr != nil {
+		r.logger.Warn().Err(fetchErr).Str("session_id", eventSession.ID).Msg("failed to re-fetch session for failure update")
+		return
+	}
+
+	if isTerminalPhase(session.Phase) {
+		r.logger.Debug().
+			Str("session_id", session.ID).
+			Str("phase", session.Phase).
+			Msg("session already in terminal phase, skipping provisioning failure")
+		return
+	}
+
+	r.logger.Error().
+		Err(err).
+		Str("session_id", session.ID).
+		Str("phase", session.Phase).
+		Msg("session provisioning failed after max retries")
+
+	condition := map[string]interface{}{
+		"type":               "Provisioning",
+		"status":             "False",
+		"reason":             "SetupFailed",
+		"message":            sanitizeProvisioningError(err),
+		"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+	}
+	conditionsJSON, marshalErr := json.Marshal([]interface{}{condition})
+	if marshalErr != nil {
+		r.logger.Error().Err(marshalErr).Str("session_id", session.ID).Msg("failed to marshal conditions")
+		r.updateSessionPhase(ctx, *session, PhaseFailed)
+		return
+	}
+
+	now := time.Now()
+	patch := map[string]interface{}{
+		"phase":           PhaseFailed,
+		"conditions":      string(conditionsJSON),
+		"completion_time": &now,
+	}
+
+	if _, updateErr := sdk.Sessions().UpdateStatus(ctx, session.ID, patch); updateErr != nil {
+		r.logger.Warn().Err(updateErr).Str("session_id", session.ID).Msg("failed to update session to Failed")
+		return
+	}
+
+	r.logger.Info().
+		Str("session_id", session.ID).
+		Str("old_phase", session.Phase).
+		Str("new_phase", PhaseFailed).
+		Msg("session marked as Failed due to provisioning error")
+}
+
+func sanitizeProvisioningError(err error) string {
+	switch {
+	case k8serrors.IsForbidden(err), k8serrors.IsUnauthorized(err):
+		return "Insufficient permissions to provision session resources. Contact your administrator to verify cluster RBAC configuration."
+	case k8serrors.IsNotFound(err):
+		return "Required cluster resources are not available. Contact your administrator to verify the platform configuration."
+	case k8serrors.IsResourceExpired(err), k8serrors.IsTooManyRequests(err):
+		return "Resource quota exceeded. The cluster does not have enough capacity to provision this session."
+	case k8serrors.IsServerTimeout(err), k8serrors.IsServiceUnavailable(err):
+		return "The cluster is temporarily unavailable. Try creating the session again."
+	default:
+		return "Session provisioning failed. Check the platform logs for details."
+	}
 }
 
 func sessionLabelSelector(sessionID string) string {
