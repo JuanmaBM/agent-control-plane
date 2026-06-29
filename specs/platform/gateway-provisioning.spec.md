@@ -54,6 +54,17 @@ The control plane SHALL read gateway configuration from a ConfigMap named `platf
 - AND ACP SHALL NOT proceed with gateway deployments
 - AND ACP SHALL wait for the ConfigMap to be corrected
 
+#### Scenario: Platform ConfigMap updated at runtime
+
+- GIVEN ACP is running with `platform-config` loaded in memory
+- AND an admin updates the `platform-config` ConfigMap
+- WHEN ACP detects the ConfigMap change
+- THEN ACP SHALL reload the ConfigMap
+- AND ACP SHALL update its in-memory namespace list
+- AND ACP SHALL reconcile gateways based on the new configuration
+- AND ACP SHALL deploy gateways for newly added namespaces
+- AND ACP SHALL update gateway configurations for modified namespaces
+
 ---
 
 ### Requirement: Namespace Validation
@@ -85,12 +96,29 @@ For each namespace listed in the platform configuration, the control plane SHALL
 - THEN ACP SHALL detect the missing namespace in the next reconcile cycle
 - AND ACP SHALL log a warning "namespace tenant-alpha listed in config but not found in cluster"
 - AND ACP SHALL skip that namespace until it reappears or is removed from the ConfigMap
+- AND the UI SHALL display the namespace in an "error" state with message "namespace not found in cluster"
+
+**Note:** UI error state integration with existing namespace status representation is described in #158.
 
 ---
 
 ### Requirement: Gateway Manifest Loading
 
 The control plane SHALL load gateway resource manifests from its container filesystem. Gateway manifests SHALL be stored in the ACP codebase and packaged into the ACP container image.
+
+Gateway manifests SHALL be generated via `helm template` with namespace-specific configuration from the platform ConfigMap, including:
+- `gateway.image` → image reference
+- `gateway.serverDnsNames` → PKI init job serverDnsNames (e.g., `openshell-gateway.<namespace>.svc.cluster.local`)
+- `gateway.config` → TOML configuration injected into gateway ConfigMap
+
+**Helm command reference:**
+```bash
+helm template openshell-gateway oci://ghcr.io/nvidia/openshell/helm-chart \
+  --namespace <tenant-namespace> \
+  --set "pkiInitJob.serverDnsNames={openshell-gateway.<tenant-namespace>.svc.cluster.local}"
+```
+
+The generated manifests SHALL be placed at `components/ambient-control-plane/manifests/gateway/` in the ACP codebase and packaged into the container image.
 
 #### Scenario: Load gateway manifests from filesystem
 
@@ -189,11 +217,11 @@ The control plane SHALL discover existing gateways in a namespace by looking for
 
 ### Requirement: Gateway Version Updates
 
-When the gateway manifests in the ACP codebase are updated, the control plane SHOULD detect drift between deployed gateway resources and the new manifests, and update the deployed resources accordingly using client-go Server-Side Apply (SSA) or similar.
+When the gateway manifests in the ACP codebase are updated, the control plane SHALL detect drift between deployed gateway resources and the new manifests, and update the deployed resources accordingly.
 
-If drift detection is not implemented, the control plane SHALL follow a create-only pattern (existing gateway resources are not modified; manual deletion required to trigger recreation with new manifests). This matches the current behavior for session pods.
+Drift detection enables automated gateway updates without manual intervention. When ACP is upgraded with new gateway manifests (e.g., new image version, configuration changes), it SHALL automatically roll out the updates to all managed namespaces.
 
-#### Scenario: Detect drift after ACP upgrade (if drift detection implemented)
+#### Scenario: Detect drift after ACP upgrade
 
 - GIVEN `tenant-alpha` has gateway v0.0.70 deployed
 - AND ACP is upgraded with manifests specifying gateway v0.0.71
@@ -202,7 +230,7 @@ If drift detection is not implemented, the control plane SHALL follow a create-o
 - AND ACP SHALL update the Deployment to v0.0.71
 - AND the update SHALL be a rolling update (zero downtime)
 
-**Note:** Drift detection MAY use template hash annotations, image tag comparison, resource spec comparison, or other mechanisms. The create-only pattern is acceptable for initial iterations.
+**Note:** Drift detection mechanism (template hash annotations, image tag comparison, resource spec comparison) is implementation-specific.
 
 ---
 
@@ -249,20 +277,44 @@ When gateway deployment fails (e.g., ImagePullBackOff, insufficient permissions)
 
 ---
 
-### Requirement: Platform ConfigMap Default Values
+### Requirement: Platform ConfigMap Gateway Configuration Mandatory
 
-When a namespace in the platform configuration has no additional configuration specified, the control plane SHALL apply the gateway with default values.
+When a namespace entry exists in the platform configuration, it MUST include gateway configuration. If gateway configuration is missing, the control plane SHALL log an error and skip that namespace.
 
-#### Scenario: Namespace with no additional configuration
+This requirement ensures explicit configuration for all gateways and prevents unexpected deployments with unconfigured gateway instances.
 
-- GIVEN `platform-config` contains:
+#### Scenario: Namespace with missing gateway configuration
+
+- GIVEN `OPENSHELL_USE_GATEWAY=true` in ACP environment
+- AND `platform-config` contains:
   ```yaml
   namespaces:
     - name: tenant-alpha
   ```
 - WHEN ACP processes the ConfigMap
-- THEN ACP SHALL deploy the gateway to `tenant-alpha` using default manifest values
+- THEN ACP SHALL log an error "namespace tenant-alpha missing required gateway configuration"
+- AND ACP SHALL skip gateway deployment for that namespace
+- AND ACP SHALL continue processing other namespaces
+
+#### Scenario: Namespace with complete gateway configuration
+
+- GIVEN `platform-config` contains:
+  ```yaml
+  namespaces:
+    - name: tenant-alpha
+      gateway:
+        image: ghcr.io/nvidia/openshell:v0.0.70
+        serverDnsNames:
+          - openshell-gateway.tenant-alpha.svc.cluster.local
+        config: |
+          [openshell.gateway]
+          bind_address = "0.0.0.0:8080"
+  ```
+- WHEN ACP processes the ConfigMap
+- THEN ACP SHALL deploy the gateway to `tenant-alpha` with the specified configuration
 - AND no namespace-specific customization SHALL be applied
+
+**Note:** If `OPENSHELL_USE_GATEWAY=false` or the feature is disabled, missing gateway configuration SHALL NOT trigger errors.
 
 ---
 
@@ -318,7 +370,7 @@ No new environment variables are required. Gateway provisioning is enabled by th
 **Namespace:** Same namespace where ACP is deployed (e.g., `ambient-code`)
 
 **Required Keys:**
-- `namespaces` (string, YAML format) — List of namespace objects
+- `namespaces` (string, YAML format) — List of namespace objects with gateway configuration
 
 **Example:**
 ```yaml
@@ -330,11 +382,37 @@ metadata:
 data:
   namespaces: |
     - name: tenant-alpha
+      gateway:
+        image: ghcr.io/nvidia/openshell:v0.0.70
+        serverDnsNames:
+          - openshell-gateway.tenant-alpha.svc.cluster.local
+        config: |
+          [openshell.gateway]
+          bind_address = "0.0.0.0:8080"
+          log_level = "info"
+          sandbox_namespace = "tenant-alpha"
+          default_image = "ghcr.io/nvidia/openshell-community/sandboxes/base:latest"
+          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.0.63"
+          
+          [openshell.gateway.auth]
+          allow_unauthenticated_users = true
+    
     - name: tenant-beta
+      gateway:
+        image: ghcr.io/nvidia/openshell:v0.0.70
+        serverDnsNames:
+          - openshell-gateway.tenant-beta.svc.cluster.local
+        # config field optional - uses defaults if omitted
+    
     - name: tenant-gamma
 ```
 
-**Future extensibility:** Additional namespace-specific configuration may be added as additional fields under each namespace entry.
+**Gateway Configuration Fields:**
+- `gateway.image` (optional) — Gateway container image (defaults to value in base manifest)
+- `gateway.serverDnsNames` (required) — DNS names for TLS certificate generation
+- `gateway.config` (optional) — OpenShell gateway TOML configuration (overrides defaults)
+
+**Note:** If gateway configuration is missing for a namespace, ACP SHALL use default values from the base manifests. Per-namespace customization allows different tenants to have different gateway versions or settings.
 
 ---
 
