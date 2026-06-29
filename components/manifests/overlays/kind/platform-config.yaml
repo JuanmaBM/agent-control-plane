@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+  namespace: ambient-code
+data:
+  namespaces: |
+    - name: tenant-a
+      gateway:
+        image: ghcr.io/nvidia/openshell/gateway:0.0.71
+        serverDnsNames:
+          - openshell-gateway.tenant-a.svc.cluster.local
+        config: |
+          [openshell.gateway]
+          bind_address = "0.0.0.0:8080"
+          log_level = "info"
+          sandbox_namespace = "tenant-a"
+          
+    - name: tenant-b
+      gateway:
+        image: ghcr.io/nvidia/openshell/gateway:0.0.71
+        serverDnsNames:
+          - openshell-gateway.tenant-b.svc.cluster.local

@@ -24,3 +24,5 @@ spec:
               value: "http://ambient-api-server.ambient-code.svc:8000"
             - name: AMBIENT_GRPC_USE_TLS
               value: "false"
+            - name: OPENSHELL_USE_GATEWAY
+              value: "true"
