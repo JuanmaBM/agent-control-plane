@@ -14,6 +14,7 @@ import (
 
 	"github.com/ambient-code/platform/components/ambient-control-plane/internal/auth"
 	"github.com/ambient-code/platform/components/ambient-control-plane/internal/config"
+	"github.com/ambient-code/platform/components/ambient-control-plane/internal/gateway"
 	"github.com/ambient-code/platform/components/ambient-control-plane/internal/informer"
 	"github.com/ambient-code/platform/components/ambient-control-plane/internal/keypair"
 	"github.com/ambient-code/platform/components/ambient-control-plane/internal/kubeclient"
@@ -23,6 +24,11 @@ import (
 	"github.com/ambient-code/platform/components/ambient-control-plane/internal/watcher"
 	sdkclient "github.com/ambient-code/platform/components/ambient-sdk/go-sdk/client"
 	"github.com/rs/zerolog"
+
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -197,6 +203,15 @@ func runKubeMode(ctx context.Context, cfg *config.ControlPlaneConfig) error {
 	inf.RegisterHandler("projects", projectReconciler.Reconcile)
 	inf.RegisterHandler("project_settings", projectSettingsReconciler.Reconcile)
 
+	// Initialize gateway provisioning (if enabled)
+	if cfg.OpenShellUseGateway {
+		go func() {
+			if err := initGatewayProvisioning(ctx, cfg.Kubeconfig, cfg.CPRuntimeNamespace); err != nil {
+				log.Error().Err(err).Msg("gateway provisioning initialization failed")
+			}
+		}()
+	}
+
 	var gateway *openshell.GatewayClient
 	if cfg.OpenShellUseGateway {
 		var resolveCred openshell.CredentialResolver
@@ -291,6 +306,68 @@ func createSessionReconcilers(reconcilerTypes []string, factory *reconciler.SDKC
 
 	log.Info().Int("count", len(reconcilers)).Strs("types", reconcilerTypes).Msg("configured session reconcilers")
 	return reconcilers
+}
+
+func initGatewayProvisioning(ctx context.Context, kubeconfig string, namespace string) error {
+	log.Info().Msg("initializing gateway provisioning")
+
+	// Build REST config
+	cfg, err := buildKubeConfig(kubeconfig)
+	if err != nil {
+		return fmt.Errorf("build kubeconfig: %w", err)
+	}
+
+	// Create Kubernetes clientset
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("create kubernetes clientset: %w", err)
+	}
+
+	// Create dynamic client
+	dynamicClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("create dynamic client: %w", err)
+	}
+
+	// Load platform config
+	nsConfigs, err := gateway.LoadPlatformConfig(ctx, clientset, namespace)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to load platform config, gateway provisioning disabled")
+		nsConfigs = []gateway.NamespaceConfig{} // Continue without gateway provisioning
+	}
+
+	// Load gateway manifests
+	manifests, err := gateway.LoadGatewayManifests("/manifests/gateway")
+	if err != nil {
+		return fmt.Errorf("load gateway manifests: %w", err)
+	}
+
+	// Initial reconciliation
+	if err := gateway.ReconcileGateways(ctx, dynamicClient, clientset, nsConfigs, manifests); err != nil {
+		log.Error().Err(err).Msg("initial gateway reconciliation failed")
+	}
+
+	// Start ConfigMap watcher (blocks until context cancelled)
+	return gateway.WatchPlatformConfig(ctx, clientset, namespace, func(newConfigs []gateway.NamespaceConfig) {
+		log.Info().Int("namespaces", len(newConfigs)).Msg("platform-config updated, reconciling gateways")
+		if err := gateway.ReconcileGateways(ctx, dynamicClient, clientset, newConfigs, manifests); err != nil {
+			log.Error().Err(err).Msg("gateway reconciliation after config update failed")
+		}
+	})
+}
+
+func buildKubeConfig(kubeconfig string) (*rest.Config, error) {
+	if kubeconfig != "" {
+		return clientcmd.BuildConfigFromFlags("", kubeconfig)
+	}
+
+	home, _ := os.UserHomeDir()
+	localPath := home + "/.kube/config"
+	if _, err := os.Stat(localPath); err == nil {
+		return clientcmd.BuildConfigFromFlags("", localPath)
+	}
+
+	return rest.InClusterConfig()
 }
 
 func loadServiceCAPool() *x509.CertPool {

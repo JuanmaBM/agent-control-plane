@@ -1,0 +1,202 @@
+package gateway
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/rs/zerolog/log"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+)
+
+// ReconcileGateways ensures gateways are deployed in all configured namespaces
+func ReconcileGateways(
+	ctx context.Context,
+	dynamicClient dynamic.Interface,
+	clientset *kubernetes.Clientset,
+	namespaceConfigs []NamespaceConfig,
+	manifests map[string][]*unstructured.Unstructured,
+) error {
+	defaultImage := os.Getenv("OPENSHELL_GATEWAY_IMAGE")
+	if defaultImage == "" {
+		defaultImage = "ghcr.io/nvidia/openshell/gateway:0.0.71" // Fallback
+	}
+
+	openshellEnabled := os.Getenv("OPENSHELL_USE_GATEWAY")
+
+	for _, nsConfig := range namespaceConfigs {
+		// 1. Validate namespace exists
+		if !namespaceExists(ctx, clientset, nsConfig.Name) {
+			log.Warn().
+				Str("namespace", nsConfig.Name).
+				Msg("namespace not found in cluster, skipping gateway deployment")
+			continue
+		}
+
+		// 2. Check if gateway config is present (mandatory when OPENSHELL_USE_GATEWAY=true)
+		if openshellEnabled == "true" && nsConfig.Gateway.Image == "" && len(nsConfig.Gateway.ServerDnsNames) == 0 {
+			log.Error().
+				Str("namespace", nsConfig.Name).
+				Msg("namespace missing required gateway configuration")
+			continue
+		}
+
+		// 3. Deploy/update gateway manifests (reconcile pattern)
+		if err := deployGateway(ctx, dynamicClient, nsConfig, manifests, defaultImage); err != nil {
+			log.Error().
+				Str("namespace", nsConfig.Name).
+				Err(err).
+				Msg("failed to deploy gateway")
+			continue // Don't block other namespaces
+		}
+
+		log.Info().
+			Str("namespace", nsConfig.Name).
+			Str("image", defaultImage).
+			Msg("gateway reconciled successfully")
+	}
+
+	return nil
+}
+
+// namespaceExists checks if a namespace exists in the cluster
+func namespaceExists(ctx context.Context, clientset *kubernetes.Clientset, namespace string) bool {
+	_, err := clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	return err == nil
+}
+
+// deployGateway applies all gateway manifests to the namespace using update-or-create pattern
+func deployGateway(
+	ctx context.Context,
+	dynamicClient dynamic.Interface,
+	nsConfig NamespaceConfig,
+	manifests map[string][]*unstructured.Unstructured,
+	defaultImage string,
+) error {
+	// Apply manifests in order: RBAC → ServiceAccount → ConfigMap → Job → Service → StatefulSet → NetworkPolicy
+	order := []string{
+		"rbac.yaml",
+		"serviceaccount.yaml",
+		"configmap.yaml",
+		"certgen-job.yaml",
+		"service.yaml",
+		"statefulset.yaml",
+		"networkpolicy.yaml",
+	}
+
+	for _, filename := range order {
+		resources, ok := manifests[filename]
+		if !ok {
+			log.Warn().
+				Str("file", filename).
+				Msg("manifest file not found, skipping")
+			continue
+		}
+
+		for _, manifest := range resources {
+			// Apply namespace and image substitutions
+			obj, err := ApplyManifestToNamespace(manifest, nsConfig.Name, nsConfig.Gateway, defaultImage)
+			if err != nil {
+				return fmt.Errorf("apply substitutions for %s: %w", filename, err)
+			}
+
+			// Apply config overrides (serverDnsNames, custom TOML)
+			if err := ApplyConfigOverrides(obj, nsConfig.Gateway); err != nil {
+				return fmt.Errorf("apply config overrides for %s: %w", filename, err)
+			}
+
+			// Reconcile resource (update-or-create)
+			if err := reconcileResource(ctx, dynamicClient, obj); err != nil {
+				return fmt.Errorf("reconcile resource from %s: %w", filename, err)
+			}
+
+			log.Debug().
+				Str("namespace", nsConfig.Name).
+				Str("kind", obj.GetKind()).
+				Str("name", obj.GetName()).
+				Msg("reconciled gateway resource")
+		}
+	}
+
+	return nil
+}
+
+// reconcileResource creates or updates a Kubernetes resource
+func reconcileResource(ctx context.Context, dynamicClient dynamic.Interface, obj *unstructured.Unstructured) error {
+	gvk := obj.GroupVersionKind()
+	gvr := schema.GroupVersionResource{
+		Group:    gvk.Group,
+		Version:  gvk.Version,
+		Resource: kindToResource(gvk.Kind),
+	}
+
+	namespace := obj.GetNamespace()
+	name := obj.GetName()
+
+	// Determine if resource is namespace-scoped or cluster-scoped
+	var resourceClient dynamic.ResourceInterface
+	if namespace != "" {
+		resourceClient = dynamicClient.Resource(gvr).Namespace(namespace)
+	} else {
+		resourceClient = dynamicClient.Resource(gvr)
+	}
+
+	// Try to get existing resource
+	existing, err := resourceClient.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			// Resource doesn't exist, create it
+			_, err = resourceClient.Create(ctx, obj, metav1.CreateOptions{})
+			if err != nil {
+				return fmt.Errorf("create resource: %w", err)
+			}
+			log.Debug().
+				Str("kind", gvk.Kind).
+				Str("name", name).
+				Str("namespace", namespace).
+				Msg("created new resource")
+			return nil
+		}
+		return fmt.Errorf("get resource: %w", err)
+	}
+
+	// Resource exists, update it
+	// Preserve resourceVersion for optimistic concurrency
+	obj.SetResourceVersion(existing.GetResourceVersion())
+
+	_, err = resourceClient.Update(ctx, obj, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("update resource: %w", err)
+	}
+
+	log.Debug().
+		Str("kind", gvk.Kind).
+		Str("name", name).
+		Str("namespace", namespace).
+		Msg("updated existing resource")
+
+	return nil
+}
+
+// kindToResource converts Kind to resource name (e.g., "Service" -> "services")
+func kindToResource(kind string) string {
+	// Special cases
+	switch kind {
+	case "NetworkPolicy":
+		return "networkpolicies"
+	case "Endpoints":
+		return "endpoints"
+	case "Ingress":
+		return "ingresses"
+	}
+
+	// Default: lowercase + s
+	resource := strings.ToLower(kind) + "s"
+	return resource
+}
