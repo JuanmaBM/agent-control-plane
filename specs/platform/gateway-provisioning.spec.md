@@ -189,7 +189,7 @@ The control plane SHALL discover existing gateways in a namespace by looking for
 
 ### Requirement: Gateway Version Updates
 
-When the gateway manifests in the ACP codebase are updated, the control plane SHOULD detect drift between deployed gateway resources and the new manifests, and update the deployed resources accordingly.
+When the gateway manifests in the ACP codebase are updated, the control plane SHOULD detect drift between deployed gateway resources and the new manifests, and update the deployed resources accordingly using client-go Server-Side Apply (SSA) or similar.
 
 If drift detection is not implemented, the control plane SHALL follow a create-only pattern (existing gateway resources are not modified; manual deletion required to trigger recreation with new manifests). This matches the current behavior for session pods.
 
