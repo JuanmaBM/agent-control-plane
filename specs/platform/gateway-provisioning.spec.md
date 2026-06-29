@@ -151,6 +151,7 @@ Gateway resources SHALL NOT have OwnerReferences (consistent with current sessio
 - AND `platform-config` lists `tenant-alpha`
 - WHEN ACP reconciles gateways
 - THEN ACP SHALL detect the existing gateway via Service label `app.kubernetes.io/name=openshell`
+- AND ACP SHALL apply the latest gateway configurations using client-go Server-Side Apply (SSA) or equivalent
 - AND ACP SHALL NOT create duplicate resources
 - AND ACP MAY verify the gateway is healthy
 
