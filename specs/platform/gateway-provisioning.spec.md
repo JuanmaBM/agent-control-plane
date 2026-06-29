@@ -310,7 +310,7 @@ When enabled, this specification does NOT conflict with:
 
 ### Environment Variables
 
-No new environment variables are required. Gateway provisioning is enabled by the presence of the `platform-config` ConfigMap.
+No new environment variables are required. Gateway provisioning is enabled by the presence OPENSHELL_USE_GATEWAY=true
 
 ### ConfigMap Schema
 
