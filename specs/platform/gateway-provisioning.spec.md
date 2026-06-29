@@ -125,7 +125,7 @@ All gateway resources SHALL use fixed names:
 All gateway resources SHALL carry the following labels:
 - `app.kubernetes.io/name=openshell`
 - `app.kubernetes.io/component=gateway`
-- `app.kubernetes.io/managed-by=ambient-control-plane`
+- `app.kubernetes.io/managed-by=agent-control-plane`
 
 The gateway Deployment SHALL specify:
 - **SecurityContext:** `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, capabilities `drop: [ALL]`
