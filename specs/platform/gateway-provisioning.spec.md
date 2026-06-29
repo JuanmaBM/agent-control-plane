@@ -405,14 +405,16 @@ data:
         # config field optional - uses defaults if omitted
     
     - name: tenant-gamma
+      gateway:
+        image: ghcr.io/nvidia/openshell:v0.0.70
+        serverDnsNames:
+          - openshell-gateway.tenant-gamma.svc.cluster.local
 ```
 
 **Gateway Configuration Fields:**
-- `gateway.image` (optional) — Gateway container image (defaults to value in base manifest)
+- `gateway.image` (optional) — Gateway container image (defaults to `OPENSHELL_GATEWAY_IMAGE` env var)
 - `gateway.serverDnsNames` (required) — DNS names for TLS certificate generation
-- `gateway.config` (optional) — OpenShell gateway TOML configuration (overrides defaults)
-
-**Note:** If gateway configuration is missing for a namespace, ACP SHALL use default values from the base manifests. Per-namespace customization allows different tenants to have different gateway versions or settings.
+- `gateway.config` (optional) — OpenShell gateway TOML configuration (overrides defaults from base manifests)
 
 ---
 
