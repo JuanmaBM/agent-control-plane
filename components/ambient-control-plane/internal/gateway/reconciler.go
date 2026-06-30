@@ -113,10 +113,9 @@ func deployGateway(
 				return fmt.Errorf("apply config overrides for %s: %w", filename, err)
 			}
 
-			// Set OwnerReference to platform-config ConfigMap for garbage collection
-			if platformConfigCM != nil {
-				setOwnerReference(obj, platformConfigCM)
-			}
+			// OwnerReferences can't cross namespaces, so we skip setting them for gateway resources
+			// Gateway cleanup will be handled by namespace deletion or manual removal from ConfigMap
+			// Note: Could use labels for tracking, but OwnerReferences won't work here
 
 			// Reconcile resource (update-or-create)
 			if err := reconcileResource(ctx, dynamicClient, obj); err != nil {
