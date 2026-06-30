@@ -3,12 +3,14 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 )
 
 // NamespaceConfig represents a single namespace entry from platform-config
@@ -61,29 +63,91 @@ func LoadPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, na
 	return namespaces, nil
 }
 
-// WatchPlatformConfig sets up a periodic poll (30s) to detect ConfigMap changes
+// WatchPlatformConfig sets up a Kubernetes Informer to watch platform-config ConfigMap changes
 func WatchPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, namespace string, onChange func([]NamespaceConfig)) error {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	// Create SharedInformerFactory filtered to specific ConfigMap
+	factory := informers.NewSharedInformerFactoryWithOptions(
+		clientset,
+		0, // resyncPeriod: 0 means no periodic resync (only watch events)
+		informers.WithNamespace(namespace),
+		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
+			opts.FieldSelector = "metadata.name=platform-config"
+		}),
+	)
+
+	cmInformer := factory.Core().V1().ConfigMaps().Informer()
+
+	// Add event handlers for Add and Update
+	cmInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			cm := obj.(*v1.ConfigMap)
+			log.Info().
+				Str("configmap", cm.Name).
+				Msg("platform-config added, triggering reconciliation")
+			configs := parseConfigMap(cm)
+			onChange(configs)
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			cm := newObj.(*v1.ConfigMap)
+			log.Info().
+				Str("configmap", cm.Name).
+				Msg("platform-config updated, triggering reconciliation")
+			configs := parseConfigMap(cm)
+			onChange(configs)
+		},
+		DeleteFunc: func(obj interface{}) {
+			cm := obj.(*v1.ConfigMap)
+			log.Warn().
+				Str("configmap", cm.Name).
+				Msg("platform-config deleted, clearing gateway configs")
+			onChange([]NamespaceConfig{})
+		},
+	})
 
 	log.Info().
 		Str("configmap", "platform-config").
-		Msg("starting platform-config watcher (30s poll)")
+		Str("namespace", namespace).
+		Msg("starting platform-config Informer (event-driven)")
 
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info().Msg("platform-config watcher stopped")
-			return ctx.Err()
-		case <-ticker.C:
-			configs, err := LoadPlatformConfig(ctx, clientset, namespace)
-			if err != nil {
-				log.Warn().
-					Err(err).
-					Msg("platform-config reload failed, will retry")
-				continue
-			}
-			onChange(configs)
-		}
+	// Start informer and block until context is cancelled
+	factory.Start(ctx.Done())
+
+	// Wait for initial cache sync
+	if !cache.WaitForCacheSync(ctx.Done(), cmInformer.HasSynced) {
+		return fmt.Errorf("failed to sync platform-config Informer cache")
 	}
+
+	log.Info().Msg("platform-config Informer cache synced")
+
+	// Block until context is cancelled
+	<-ctx.Done()
+	log.Info().Msg("platform-config Informer stopped")
+	return ctx.Err()
+}
+
+// parseConfigMap extracts namespace configs from a ConfigMap
+func parseConfigMap(cm *v1.ConfigMap) []NamespaceConfig {
+	namespacesYAML, ok := cm.Data["namespaces"]
+	if !ok {
+		log.Error().
+			Str("configmap", cm.Name).
+			Msg("platform-config missing 'namespaces' key")
+		return []NamespaceConfig{}
+	}
+
+	var namespaces []NamespaceConfig
+	if err := yaml.Unmarshal([]byte(namespacesYAML), &namespaces); err != nil {
+		log.Error().
+			Str("configmap", cm.Name).
+			Err(err).
+			Msg("failed to parse platform-config namespaces YAML")
+		return []NamespaceConfig{}
+	}
+
+	log.Info().
+		Str("configmap", cm.Name).
+		Int("namespace_count", len(namespaces)).
+		Msg("parsed platform-config")
+
+	return namespaces
 }
