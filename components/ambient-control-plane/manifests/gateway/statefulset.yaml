@@ -37,6 +37,7 @@ spec:
               - ALL
             runAsNonRoot: true
             runAsUser: 1000
+            readOnlyRootFilesystem: true
           image: IMAGE_PLACEHOLDER
           imagePullPolicy: IfNotPresent
           args:

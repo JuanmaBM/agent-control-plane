@@ -28,8 +28,6 @@ func ReconcileGateways(
 		defaultImage = "ghcr.io/nvidia/openshell/gateway:0.0.71" // Fallback
 	}
 
-	openshellEnabled := os.Getenv("OPENSHELL_USE_GATEWAY")
-
 	for _, nsConfig := range namespaceConfigs {
 		// 1. Validate namespace exists
 		if !namespaceExists(ctx, clientset, nsConfig.Name) {
@@ -39,11 +37,12 @@ func ReconcileGateways(
 			continue
 		}
 
-		// 2. Check if gateway config is present (mandatory when OPENSHELL_USE_GATEWAY=true)
-		if openshellEnabled == "true" && nsConfig.Gateway.Image == "" && len(nsConfig.Gateway.ServerDnsNames) == 0 {
+		// 2. Validate gateway configuration
+		if err := ValidateGatewayConfig(nsConfig.Gateway); err != nil {
 			log.Error().
 				Str("namespace", nsConfig.Name).
-				Msg("namespace missing required gateway configuration")
+				Err(err).
+				Msg("invalid gateway configuration")
 			continue
 		}
 
@@ -184,19 +183,29 @@ func reconcileResource(ctx context.Context, dynamicClient dynamic.Interface, obj
 	return nil
 }
 
-// kindToResource converts Kind to resource name (e.g., "Service" -> "services")
+// kindToResource converts Kind to resource name using explicit allowlist
 func kindToResource(kind string) string {
-	// Special cases
-	switch kind {
-	case "NetworkPolicy":
-		return "networkpolicies"
-	case "Endpoints":
-		return "endpoints"
-	case "Ingress":
-		return "ingresses"
+	// Explicit mapping for all resource types used in gateway manifests
+	mapping := map[string]string{
+		"ServiceAccount":     "serviceaccounts",
+		"ConfigMap":          "configmaps",
+		"Service":            "services",
+		"StatefulSet":        "statefulsets",
+		"Deployment":         "deployments",
+		"Job":                "jobs",
+		"Role":               "roles",
+		"RoleBinding":        "rolebindings",
+		"ClusterRole":        "clusterroles",
+		"ClusterRoleBinding": "clusterrolebindings",
+		"NetworkPolicy":      "networkpolicies",
+		"Secret":             "secrets",
 	}
 
-	// Default: lowercase + s
-	resource := strings.ToLower(kind) + "s"
-	return resource
+	if resource, ok := mapping[kind]; ok {
+		return resource
+	}
+
+	// Fallback for unknown types (logged as debug)
+	log.Debug().Str("kind", kind).Msg("unknown kind, using naive plural")
+	return strings.ToLower(kind) + "s"
 }

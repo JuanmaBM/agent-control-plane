@@ -27,8 +27,6 @@ COPY ambient-control-plane/manifests/ /manifests/
 
 RUN chmod +x /usr/local/bin/ambient-control-plane
 
-ENV OPENSHELL_GATEWAY_IMAGE=ghcr.io/nvidia/openshell/gateway:0.0.71
-
 USER 1001
 
 ENTRYPOINT ["/usr/local/bin/ambient-control-plane"]

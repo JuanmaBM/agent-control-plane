@@ -360,13 +360,6 @@ func buildKubeConfig(kubeconfig string) (*rest.Config, error) {
 	if kubeconfig != "" {
 		return clientcmd.BuildConfigFromFlags("", kubeconfig)
 	}
-
-	home, _ := os.UserHomeDir()
-	localPath := home + "/.kube/config"
-	if _, err := os.Stat(localPath); err == nil {
-		return clientcmd.BuildConfigFromFlags("", localPath)
-	}
-
 	return rest.InClusterConfig()
 }
 
