@@ -97,7 +97,19 @@ func WatchPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, n
 			onChange(configs, cm)
 		},
 		DeleteFunc: func(obj interface{}) {
-			cm := obj.(*v1.ConfigMap)
+			cm, ok := obj.(*v1.ConfigMap)
+			if !ok {
+				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+				if !ok {
+					log.Warn().Msg("platform-config delete: unrecognized object type")
+					return
+				}
+				cm, ok = tombstone.Obj.(*v1.ConfigMap)
+				if !ok {
+					log.Warn().Msg("platform-config delete: tombstone is not a ConfigMap")
+					return
+				}
+			}
 			log.Warn().
 				Str("configmap", cm.Name).
 				Msg("platform-config deleted, clearing gateway configs")

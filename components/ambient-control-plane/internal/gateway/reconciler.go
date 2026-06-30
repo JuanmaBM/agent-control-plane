@@ -82,13 +82,18 @@ func deployGateway(
 	defaultImage string,
 	platformConfigCM *v1.ConfigMap,
 ) error {
-	// If serverDnsNames changed, delete TLS secrets and certgen job to force regeneration
+	// Check what changed for THIS namespace
+	dnsNamesChanged := false
+	configTomlChanged := false
+
+	// Check DNS names
 	if len(nsConfig.Gateway.ServerDnsNames) > 0 {
 		changed, err := serverDnsNamesChanged(ctx, dynamicClient, nsConfig.Name, nsConfig.Gateway.ServerDnsNames)
 		if err != nil {
 			log.Warn().Err(err).Msg("failed to check if DNS names changed, assuming changed")
 			changed = true // If we can't check, assume changed to be safe
 		}
+		dnsNamesChanged = changed
 
 		if changed {
 			if err := deleteSecretsForCertRegeneration(ctx, dynamicClient, nsConfig.Name); err != nil {
@@ -96,6 +101,19 @@ func deployGateway(
 			}
 		}
 	}
+
+	// Check custom TOML config
+	if nsConfig.Gateway.Config != "" {
+		changed, err := gatewayConfigTomlChanged(ctx, dynamicClient, nsConfig.Name, nsConfig.Gateway.Config)
+		if err != nil {
+			log.Warn().Err(err).Msg("failed to check if config TOML changed, assuming changed")
+			changed = true // If we can't check, assume changed to be safe
+		}
+		configTomlChanged = changed
+	}
+
+	// Only restart pods if DNS or config changed (image changes trigger K8s rolling update automatically)
+	needsRestart := dnsNamesChanged || configTomlChanged
 
 	// Apply manifests in order: RBAC → ServiceAccount → ConfigMap → Job → Service → StatefulSet → NetworkPolicy
 	order := []string{
@@ -134,7 +152,7 @@ func deployGateway(
 			// Note: Could use labels for tracking, but OwnerReferences won't work here
 
 			// Reconcile resource (update-or-create)
-			if err := reconcileResource(ctx, dynamicClient, obj); err != nil {
+			if err := reconcileResource(ctx, dynamicClient, obj, needsRestart); err != nil {
 				return fmt.Errorf("reconcile resource from %s: %w", filename, err)
 			}
 
@@ -195,6 +213,35 @@ func serverDnsNamesChanged(ctx context.Context, dynamicClient dynamic.Interface,
 	}
 
 	return false, nil
+}
+
+// gatewayConfigTomlChanged checks if the custom TOML config in the ConfigMap differs from the desired config
+func gatewayConfigTomlChanged(ctx context.Context, dynamicClient dynamic.Interface, namespace string, desiredConfig string) (bool, error) {
+	configMapGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
+
+	// Get current ConfigMap
+	obj, err := dynamicClient.Resource(configMapGVR).Namespace(namespace).Get(ctx, "openshell-gateway-config", metav1.GetOptions{})
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			// ConfigMap doesn't exist yet, config is "changed" (new deployment)
+			return true, nil
+		}
+		return false, fmt.Errorf("get openshell-gateway-config: %w", err)
+	}
+
+	// Extract gateway.toml from ConfigMap data
+	data, found, err := unstructured.NestedMap(obj.Object, "data")
+	if err != nil || !found {
+		return true, nil // If we can't read it, assume changed
+	}
+
+	currentConfig, ok := data["gateway.toml"].(string)
+	if !ok {
+		return true, nil // If gateway.toml missing, assume changed
+	}
+
+	// Compare configs (simple string comparison)
+	return currentConfig != desiredConfig, nil
 }
 
 // extractServerSansFromToml parses server_sans array from TOML string
@@ -265,7 +312,7 @@ func deleteSecretsForCertRegeneration(ctx context.Context, dynamicClient dynamic
 }
 
 // reconcileResource creates or updates a Kubernetes resource
-func reconcileResource(ctx context.Context, dynamicClient dynamic.Interface, obj *unstructured.Unstructured) error {
+func reconcileResource(ctx context.Context, dynamicClient dynamic.Interface, obj *unstructured.Unstructured, needsRestart bool) error {
 	gvk := obj.GroupVersionKind()
 	gvr := schema.GroupVersionResource{
 		Group:    gvk.Group,
@@ -314,8 +361,9 @@ func reconcileResource(ctx context.Context, dynamicClient dynamic.Interface, obj
 	}
 
 	// Resource exists, update it
-	// For StatefulSets, add restart annotation to force pod recreation
-	if gvk.Kind == "StatefulSet" {
+	// For StatefulSets, add restart annotation ONLY if DNS or config changed
+	// (image changes trigger K8s rolling update automatically, no annotation needed)
+	if gvk.Kind == "StatefulSet" && needsRestart {
 		annotations, _, _ := unstructured.NestedStringMap(obj.Object, "spec", "template", "metadata", "annotations")
 		if annotations == nil {
 			annotations = make(map[string]string)
@@ -324,6 +372,10 @@ func reconcileResource(ctx context.Context, dynamicClient dynamic.Interface, obj
 		if err := unstructured.SetNestedStringMap(obj.Object, annotations, "spec", "template", "metadata", "annotations"); err != nil {
 			log.Warn().Err(err).Msg("failed to add restart annotation, StatefulSet may not restart pods")
 		}
+		log.Info().
+			Str("namespace", namespace).
+			Str("name", name).
+			Msg("added restart annotation to StatefulSet (DNS or config changed)")
 	}
 
 	// Preserve resourceVersion for optimistic concurrency

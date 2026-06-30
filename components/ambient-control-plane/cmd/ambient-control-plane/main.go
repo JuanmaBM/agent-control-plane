@@ -205,12 +205,14 @@ func runKubeMode(ctx context.Context, cfg *config.ControlPlaneConfig) error {
 	inf.RegisterHandler("project_settings", projectSettingsReconciler.Reconcile)
 
 	// Initialize gateway provisioning (if enabled)
+	gatewayErrCh := make(chan error, 1)
 	if cfg.OpenShellUseGateway {
 		go func() {
-			if err := initGatewayProvisioning(ctx, cfg.Kubeconfig, cfg.CPRuntimeNamespace); err != nil {
-				log.Error().Err(err).Msg("gateway provisioning initialization failed")
-			}
+			gatewayErrCh <- initGatewayProvisioning(ctx, cfg.Kubeconfig, cfg.CPRuntimeNamespace)
 		}()
+	} else {
+		// Close channel immediately so it's never selected
+		close(gatewayErrCh)
 	}
 
 	var gateway *openshell.GatewayClient
@@ -265,6 +267,12 @@ func runKubeMode(ctx context.Context, cfg *config.ControlPlaneConfig) error {
 		return infErr
 	case podSyncErr := <-podSyncErrCh:
 		return fmt.Errorf("pod status syncer: %w", podSyncErr)
+	case gwErr := <-gatewayErrCh:
+		if gwErr != nil {
+			return fmt.Errorf("gateway provisioning: %w", gwErr)
+		}
+		// Gateway provisioning exited cleanly (shouldn't happen), continue with other channels
+		return <-infErrCh
 	}
 }
 
