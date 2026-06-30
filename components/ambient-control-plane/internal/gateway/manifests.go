@@ -136,6 +136,43 @@ func ApplyConfigOverrides(obj *unstructured.Unstructured, config GatewayConfig) 
 		}
 	}
 
+	// Update ConfigMap server_sans if serverDnsNames provided (and no custom config)
+	if kind == "ConfigMap" && obj.GetName() == "openshell-gateway-config" && len(config.ServerDnsNames) > 0 && config.Config == "" {
+		data, found, err := unstructured.NestedMap(obj.Object, "data")
+		if err != nil || !found {
+			return fmt.Errorf("configmap data not found")
+		}
+
+		toml, ok := data["gateway.toml"].(string)
+		if !ok {
+			return fmt.Errorf("gateway.toml not found in configmap")
+		}
+
+		// Build server_sans array
+		serverSans := "["
+		for i, dns := range config.ServerDnsNames {
+			if i > 0 {
+				serverSans += ", "
+			}
+			serverSans += fmt.Sprintf("\"%s\"", dns)
+		}
+		serverSans += "]"
+
+		// Replace server_sans line in TOML
+		lines := strings.Split(toml, "\n")
+		for i, line := range lines {
+			if strings.Contains(line, "server_sans =") {
+				lines[i] = fmt.Sprintf("    server_sans = %s", serverSans)
+				break
+			}
+		}
+		data["gateway.toml"] = strings.Join(lines, "\n")
+
+		if err := unstructured.SetNestedMap(obj.Object, data, "data"); err != nil {
+			return fmt.Errorf("set configmap data: %w", err)
+		}
+	}
+
 	// Update certgen Job serverDnsNames if provided
 	if kind == "Job" && strings.Contains(obj.GetName(), "certgen") && len(config.ServerDnsNames) > 0 {
 		containers, found, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
@@ -154,15 +191,20 @@ func ApplyConfigOverrides(obj *unstructured.Unstructured, config GatewayConfig) 
 				continue
 			}
 
-			// Replace --server-san argument
-			for j, arg := range args {
-				if strings.HasPrefix(arg, "--server-san=") {
-					args[j] = fmt.Sprintf("--server-san=%s", config.ServerDnsNames[0])
-					break
+			// Remove all existing --server-san arguments
+			newArgs := []string{}
+			for _, arg := range args {
+				if !strings.HasPrefix(arg, "--server-san=") {
+					newArgs = append(newArgs, arg)
 				}
 			}
 
-			if err := unstructured.SetNestedStringSlice(containerMap, args, "args"); err != nil {
+			// Add --server-san for each DNS name
+			for _, dns := range config.ServerDnsNames {
+				newArgs = append(newArgs, fmt.Sprintf("--server-san=%s", dns))
+			}
+
+			if err := unstructured.SetNestedStringSlice(containerMap, newArgs, "args"); err != nil {
 				return fmt.Errorf("set job args: %w", err)
 			}
 

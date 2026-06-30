@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog/log"
 	v1 "k8s.io/api/core/v1"
@@ -81,6 +82,21 @@ func deployGateway(
 	defaultImage string,
 	platformConfigCM *v1.ConfigMap,
 ) error {
+	// If serverDnsNames changed, delete TLS secrets and certgen job to force regeneration
+	if len(nsConfig.Gateway.ServerDnsNames) > 0 {
+		changed, err := serverDnsNamesChanged(ctx, dynamicClient, nsConfig.Name, nsConfig.Gateway.ServerDnsNames)
+		if err != nil {
+			log.Warn().Err(err).Msg("failed to check if DNS names changed, assuming changed")
+			changed = true // If we can't check, assume changed to be safe
+		}
+
+		if changed {
+			if err := deleteSecretsForCertRegeneration(ctx, dynamicClient, nsConfig.Name); err != nil {
+				log.Warn().Err(err).Msg("failed to delete secrets for cert regeneration, continuing anyway")
+			}
+		}
+	}
+
 	// Apply manifests in order: RBAC → ServiceAccount → ConfigMap → Job → Service → StatefulSet → NetworkPolicy
 	order := []string{
 		"rbac.yaml",
@@ -129,6 +145,121 @@ func deployGateway(
 				Msg("reconciled gateway resource")
 		}
 	}
+
+	return nil
+}
+
+// serverDnsNamesChanged checks if the serverDnsNames in the ConfigMap differ from the desired list
+func serverDnsNamesChanged(ctx context.Context, dynamicClient dynamic.Interface, namespace string, desiredDnsNames []string) (bool, error) {
+	configMapGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
+
+	// Get current ConfigMap
+	obj, err := dynamicClient.Resource(configMapGVR).Namespace(namespace).Get(ctx, "openshell-gateway-config", metav1.GetOptions{})
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			// ConfigMap doesn't exist yet, DNS names are "changed" (new deployment)
+			return true, nil
+		}
+		return false, fmt.Errorf("get openshell-gateway-config: %w", err)
+	}
+
+	// Extract gateway.toml from ConfigMap data
+	data, found, err := unstructured.NestedMap(obj.Object, "data")
+	if err != nil || !found {
+		return true, nil // If we can't read it, assume changed
+	}
+
+	toml, ok := data["gateway.toml"].(string)
+	if !ok {
+		return true, nil // If gateway.toml missing, assume changed
+	}
+
+	// Extract current server_sans from TOML
+	currentDnsNames := extractServerSansFromToml(toml)
+
+	// Compare lists
+	if len(currentDnsNames) != len(desiredDnsNames) {
+		return true, nil
+	}
+
+	// Create maps for order-independent comparison
+	currentMap := make(map[string]bool)
+	for _, dns := range currentDnsNames {
+		currentMap[dns] = true
+	}
+
+	for _, dns := range desiredDnsNames {
+		if !currentMap[dns] {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// extractServerSansFromToml parses server_sans array from TOML string
+func extractServerSansFromToml(toml string) []string {
+	var dnsNames []string
+
+	lines := strings.Split(toml, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "server_sans =") {
+			// Extract array: server_sans = ["dns1", "dns2", "dns3"]
+			start := strings.Index(trimmed, "[")
+			end := strings.Index(trimmed, "]")
+			if start != -1 && end != -1 && end > start {
+				arrayContent := trimmed[start+1 : end]
+				// Split by comma and clean quotes
+				parts := strings.Split(arrayContent, ",")
+				for _, part := range parts {
+					cleaned := strings.Trim(strings.TrimSpace(part), "\"")
+					if cleaned != "" {
+						dnsNames = append(dnsNames, cleaned)
+					}
+				}
+			}
+			break
+		}
+	}
+
+	return dnsNames
+}
+
+// deleteSecretsForCertRegeneration deletes TLS secrets and certgen job to force certificate regeneration
+// when serverDnsNames change. This is necessary because certgen skips if secrets already exist.
+func deleteSecretsForCertRegeneration(ctx context.Context, dynamicClient dynamic.Interface, namespace string) error {
+	secretGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
+	jobGVR := schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}
+
+	// Delete ALL PKI secrets - certgen fails if partial state exists
+	secretsToDelete := []string{
+		"openshell-server-tls",
+		"openshell-client-tls",
+		"openshell-gateway-jwt-keys",
+	}
+
+	for _, secretName := range secretsToDelete {
+		err := dynamicClient.Resource(secretGVR).Namespace(namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
+		if err != nil && !k8serrors.IsNotFound(err) {
+			return fmt.Errorf("delete %s secret: %w", secretName, err)
+		}
+	}
+
+	// Delete certgen job (immutable, needs recreation)
+	err := dynamicClient.Resource(jobGVR).Namespace(namespace).Delete(ctx, "openshell-gateway-certgen", metav1.DeleteOptions{
+		PropagationPolicy: func() *metav1.DeletionPropagation {
+			p := metav1.DeletePropagationBackground
+			return &p
+		}(),
+	})
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return fmt.Errorf("delete openshell-gateway-certgen job: %w", err)
+	}
+
+	log.Info().
+		Str("namespace", namespace).
+		Msg("deleted all PKI secrets and certgen job for certificate regeneration")
 
 	return nil
 }
@@ -183,6 +314,18 @@ func reconcileResource(ctx context.Context, dynamicClient dynamic.Interface, obj
 	}
 
 	// Resource exists, update it
+	// For StatefulSets, add restart annotation to force pod recreation
+	if gvk.Kind == "StatefulSet" {
+		annotations, _, _ := unstructured.NestedStringMap(obj.Object, "spec", "template", "metadata", "annotations")
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		annotations["kubectl.kubernetes.io/restartedAt"] = metav1.Now().Format(time.RFC3339)
+		if err := unstructured.SetNestedStringMap(obj.Object, annotations, "spec", "template", "metadata", "annotations"); err != nil {
+			log.Warn().Err(err).Msg("failed to add restart annotation, StatefulSet may not restart pods")
+		}
+	}
+
 	// Preserve resourceVersion for optimistic concurrency
 	obj.SetResourceVersion(existing.GetResourceVersion())
 
