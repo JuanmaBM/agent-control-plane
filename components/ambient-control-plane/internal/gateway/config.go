@@ -27,7 +27,8 @@ type GatewayConfig struct {
 }
 
 // LoadPlatformConfig reads platform-config ConfigMap from ACP namespace
-func LoadPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, namespace string) ([]NamespaceConfig, error) {
+// Returns namespace configs and the ConfigMap itself (for OwnerReferences)
+func LoadPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, namespace string) ([]NamespaceConfig, *v1.ConfigMap, error) {
 	cm, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, "platform-config", metav1.GetOptions{})
 	if err != nil {
 		log.Error().
@@ -35,7 +36,7 @@ func LoadPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, na
 			Str("namespace", namespace).
 			Err(err).
 			Msg("failed to load platform-config ConfigMap")
-		return []NamespaceConfig{}, fmt.Errorf("load platform-config: %w", err)
+		return []NamespaceConfig{}, nil, fmt.Errorf("load platform-config: %w", err)
 	}
 
 	namespacesYAML, ok := cm.Data["namespaces"]
@@ -43,7 +44,7 @@ func LoadPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, na
 		log.Error().
 			Str("configmap", "platform-config").
 			Msg("platform-config missing 'namespaces' key")
-		return []NamespaceConfig{}, fmt.Errorf("platform-config missing 'namespaces' key")
+		return []NamespaceConfig{}, nil, fmt.Errorf("platform-config missing 'namespaces' key")
 	}
 
 	var namespaces []NamespaceConfig
@@ -52,7 +53,7 @@ func LoadPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, na
 			Str("configmap", "platform-config").
 			Err(err).
 			Msg("failed to parse platform-config namespaces YAML")
-		return []NamespaceConfig{}, fmt.Errorf("parse platform-config: %w", err)
+		return []NamespaceConfig{}, nil, fmt.Errorf("parse platform-config: %w", err)
 	}
 
 	log.Info().
@@ -60,11 +61,11 @@ func LoadPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, na
 		Int("namespace_count", len(namespaces)).
 		Msg("loaded platform-config")
 
-	return namespaces, nil
+	return namespaces, cm, nil
 }
 
 // WatchPlatformConfig sets up a Kubernetes Informer to watch platform-config ConfigMap changes
-func WatchPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, namespace string, onChange func([]NamespaceConfig)) error {
+func WatchPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, namespace string, onChange func([]NamespaceConfig, *v1.ConfigMap)) error {
 	// Create SharedInformerFactory filtered to specific ConfigMap
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		clientset,
@@ -85,7 +86,7 @@ func WatchPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, n
 				Str("configmap", cm.Name).
 				Msg("platform-config added, triggering reconciliation")
 			configs := parseConfigMap(cm)
-			onChange(configs)
+			onChange(configs, cm)
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			cm := newObj.(*v1.ConfigMap)
@@ -93,14 +94,14 @@ func WatchPlatformConfig(ctx context.Context, clientset *kubernetes.Clientset, n
 				Str("configmap", cm.Name).
 				Msg("platform-config updated, triggering reconciliation")
 			configs := parseConfigMap(cm)
-			onChange(configs)
+			onChange(configs, cm)
 		},
 		DeleteFunc: func(obj interface{}) {
 			cm := obj.(*v1.ConfigMap)
 			log.Warn().
 				Str("configmap", cm.Name).
 				Msg("platform-config deleted, clearing gateway configs")
-			onChange([]NamespaceConfig{})
+			onChange([]NamespaceConfig{}, nil)
 		},
 	})
 

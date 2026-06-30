@@ -25,6 +25,7 @@ import (
 	sdkclient "github.com/ambient-code/platform/components/ambient-sdk/go-sdk/client"
 	"github.com/rs/zerolog"
 
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -330,10 +331,11 @@ func initGatewayProvisioning(ctx context.Context, kubeconfig string, namespace s
 	}
 
 	// Load platform config
-	nsConfigs, err := gateway.LoadPlatformConfig(ctx, clientset, namespace)
+	nsConfigs, platformConfigCM, err := gateway.LoadPlatformConfig(ctx, clientset, namespace)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to load platform config, gateway provisioning disabled")
 		nsConfigs = []gateway.NamespaceConfig{} // Continue without gateway provisioning
+		platformConfigCM = nil
 	}
 
 	// Load gateway manifests
@@ -343,14 +345,14 @@ func initGatewayProvisioning(ctx context.Context, kubeconfig string, namespace s
 	}
 
 	// Initial reconciliation
-	if err := gateway.ReconcileGateways(ctx, dynamicClient, clientset, nsConfigs, manifests); err != nil {
+	if err := gateway.ReconcileGateways(ctx, dynamicClient, clientset, nsConfigs, manifests, platformConfigCM); err != nil {
 		log.Error().Err(err).Msg("initial gateway reconciliation failed")
 	}
 
 	// Start ConfigMap watcher (blocks until context cancelled)
-	return gateway.WatchPlatformConfig(ctx, clientset, namespace, func(newConfigs []gateway.NamespaceConfig) {
+	return gateway.WatchPlatformConfig(ctx, clientset, namespace, func(newConfigs []gateway.NamespaceConfig, cm *v1.ConfigMap) {
 		log.Info().Int("namespaces", len(newConfigs)).Msg("platform-config updated, reconciling gateways")
-		if err := gateway.ReconcileGateways(ctx, dynamicClient, clientset, newConfigs, manifests); err != nil {
+		if err := gateway.ReconcileGateways(ctx, dynamicClient, clientset, newConfigs, manifests, cm); err != nil {
 			log.Error().Err(err).Msg("gateway reconciliation after config update failed")
 		}
 	})

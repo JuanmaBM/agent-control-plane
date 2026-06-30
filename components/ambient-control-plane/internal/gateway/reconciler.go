@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/rs/zerolog/log"
+	v1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -22,6 +23,7 @@ func ReconcileGateways(
 	clientset *kubernetes.Clientset,
 	namespaceConfigs []NamespaceConfig,
 	manifests map[string][]*unstructured.Unstructured,
+	platformConfigCM *v1.ConfigMap,
 ) error {
 	defaultImage := os.Getenv("OPENSHELL_GATEWAY_IMAGE")
 	if defaultImage == "" {
@@ -47,7 +49,7 @@ func ReconcileGateways(
 		}
 
 		// 3. Deploy/update gateway manifests (reconcile pattern)
-		if err := deployGateway(ctx, dynamicClient, nsConfig, manifests, defaultImage); err != nil {
+		if err := deployGateway(ctx, dynamicClient, nsConfig, manifests, defaultImage, platformConfigCM); err != nil {
 			log.Error().
 				Str("namespace", nsConfig.Name).
 				Err(err).
@@ -77,6 +79,7 @@ func deployGateway(
 	nsConfig NamespaceConfig,
 	manifests map[string][]*unstructured.Unstructured,
 	defaultImage string,
+	platformConfigCM *v1.ConfigMap,
 ) error {
 	// Apply manifests in order: RBAC → ServiceAccount → ConfigMap → Job → Service → StatefulSet → NetworkPolicy
 	order := []string{
@@ -108,6 +111,11 @@ func deployGateway(
 			// Apply config overrides (serverDnsNames, custom TOML)
 			if err := ApplyConfigOverrides(obj, nsConfig.Gateway); err != nil {
 				return fmt.Errorf("apply config overrides for %s: %w", filename, err)
+			}
+
+			// Set OwnerReference to platform-config ConfigMap for garbage collection
+			if platformConfigCM != nil {
+				setOwnerReference(obj, platformConfigCM)
 			}
 
 			// Reconcile resource (update-or-create)
@@ -208,4 +216,20 @@ func kindToResource(kind string) string {
 	// Fallback for unknown types (logged as debug)
 	log.Debug().Str("kind", kind).Msg("unknown kind, using naive plural")
 	return strings.ToLower(kind) + "s"
+}
+
+// setOwnerReference sets the platform-config ConfigMap as owner of the resource
+// for automatic garbage collection when the ConfigMap is deleted
+func setOwnerReference(obj *unstructured.Unstructured, platformConfigCM *v1.ConfigMap) {
+	controller := true
+	obj.SetOwnerReferences([]metav1.OwnerReference{
+		{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+			Name:       platformConfigCM.Name,
+			UID:        platformConfigCM.UID,
+			Controller: &controller,
+			// BlockOwnerDeletion omitted per project convention
+		},
+	})
 }
