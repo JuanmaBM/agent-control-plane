@@ -172,6 +172,16 @@ func reconcileResource(ctx context.Context, dynamicClient dynamic.Interface, obj
 		return fmt.Errorf("get resource: %w", err)
 	}
 
+	// Jobs are immutable - skip update if already exists
+	if gvk.Kind == "Job" {
+		log.Debug().
+			Str("kind", gvk.Kind).
+			Str("name", name).
+			Str("namespace", namespace).
+			Msg("job already exists, skipping update (jobs are immutable)")
+		return nil
+	}
+
 	// Resource exists, update it
 	// Preserve resourceVersion for optimistic concurrency
 	obj.SetResourceVersion(existing.GetResourceVersion())
