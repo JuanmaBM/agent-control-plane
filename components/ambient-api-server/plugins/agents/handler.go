@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/gorilla/mux"
 
 	"github.com/ambient-code/platform/components/ambient-api-server/pkg/api/openapi"
 	"github.com/ambient-code/platform/components/ambient-api-server/pkg/gateway"
 	"github.com/openshift-online/rh-trex-ai/pkg/api/presenters"
+	"github.com/openshift-online/rh-trex-ai/pkg/auth"
 	"github.com/openshift-online/rh-trex-ai/pkg/errors"
 	"github.com/openshift-online/rh-trex-ai/pkg/handlers"
 	"github.com/openshift-online/rh-trex-ai/pkg/services"
@@ -33,10 +35,20 @@ func NewAgentHandler(agent AgentService, generic services.GenericService) *agent
 
 func (h agentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Gateway mode gating — BEFORE HandlerConfig
+	// Allow control-plane service account to bypass for ConfigMap sync
 	if gateway.IsGatewayModeActive() {
-		handlers.HandleError(r.Context(), w, errors.Forbidden(
-			"Agent creation is not permitted in gateway mode. Agents are managed via GitOps ConfigMaps."))
-		return
+		username := auth.GetUsernameFromContext(r.Context())
+
+		// Allow control-plane (either via service account or dev-user token)
+		isControlPlane := username == "dev-user" ||
+			(strings.HasPrefix(username, "system:serviceaccount:") &&
+				strings.Contains(username, "ambient-control-plane"))
+
+		if !isControlPlane {
+			handlers.HandleError(r.Context(), w, errors.Forbidden(
+				"Agent creation is not permitted in gateway mode. Agents are managed via GitOps ConfigMaps."))
+			return
+		}
 	}
 
 	var agent openapi.Agent
@@ -64,10 +76,20 @@ func (h agentHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 func (h agentHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	// Gateway mode gating — BEFORE HandlerConfig
+	// Allow control-plane service account to bypass for ConfigMap sync
 	if gateway.IsGatewayModeActive() {
-		handlers.HandleError(r.Context(), w, errors.Forbidden(
-			"Agent updates are not permitted in gateway mode. Agents are managed via GitOps ConfigMaps."))
-		return
+		username := auth.GetUsernameFromContext(r.Context())
+
+		// Allow control-plane (either via service account or dev-user token)
+		isControlPlane := username == "dev-user" ||
+			(strings.HasPrefix(username, "system:serviceaccount:") &&
+				strings.Contains(username, "ambient-control-plane"))
+
+		if !isControlPlane {
+			handlers.HandleError(r.Context(), w, errors.Forbidden(
+				"Agent updates are not permitted in gateway mode. Agents are managed via GitOps ConfigMaps."))
+			return
+		}
 	}
 
 	var patch openapi.AgentPatchRequest
@@ -240,10 +262,20 @@ func (h agentHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 func (h agentHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	// Gateway mode gating — BEFORE HandlerConfig
+	// Allow control-plane service account to bypass for ConfigMap sync
 	if gateway.IsGatewayModeActive() {
-		handlers.HandleError(r.Context(), w, errors.Forbidden(
-			"Agent deletion is not permitted in gateway mode. Agents are managed via GitOps ConfigMaps."))
-		return
+		username := auth.GetUsernameFromContext(r.Context())
+
+		// Allow control-plane (either via service account or dev-user token)
+		isControlPlane := username == "dev-user" ||
+			(strings.HasPrefix(username, "system:serviceaccount:") &&
+				strings.Contains(username, "ambient-control-plane"))
+
+		if !isControlPlane {
+			handlers.HandleError(r.Context(), w, errors.Forbidden(
+				"Agent deletion is not permitted in gateway mode. Agents are managed via GitOps ConfigMaps."))
+			return
+		}
 	}
 
 	cfg := &handlers.HandlerConfig{
