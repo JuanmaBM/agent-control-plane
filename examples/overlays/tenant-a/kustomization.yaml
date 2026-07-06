@@ -4,5 +4,7 @@ resources:
   - project.yaml
   - provider-vertex.yaml
   - provider-jira.yaml
+  - provider-github.yaml
   - credential-vertex.yaml
   - credential-jira.yaml
+  - credential-github.yaml

@@ -3,4 +3,6 @@ resources:
   - ../../base
   - project.yaml
   - provider-vertex.yaml
+  - provider-github.yaml
   - credential-vertex.yaml
+  - credential-github.yaml
