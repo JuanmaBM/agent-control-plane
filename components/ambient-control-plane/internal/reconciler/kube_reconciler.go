@@ -253,6 +253,14 @@ func (r *SimpleKubeReconciler) provisionSessionPod(ctx context.Context, session 
 		return fmt.Errorf("ensuring service account: %w", err)
 	}
 
+	if err := r.ensureSessionRole(ctx, namespace, session); err != nil {
+		return fmt.Errorf("ensuring session RBAC role: %w", err)
+	}
+
+	if err := r.ensureSessionNetworkPolicy(ctx, namespace, session); err != nil {
+		return fmt.Errorf("ensuring session network policy: %w", err)
+	}
+
 	credentialIDs, err := r.resolveCredentialIDs(ctx, sdk, session.ProjectID, session.AgentID)
 	if err != nil {
 		r.logger.Warn().Err(err).Str("session_id", session.ID).Msg("credential resolution failed; continuing without credentials")
@@ -929,6 +937,25 @@ func (r *SimpleKubeReconciler) resolveAgentSandboxPolicy(ctx context.Context, sd
 	return &sbxPolicy, nil
 }
 
+func (r *SimpleKubeReconciler) resolveMaxSeq(ctx context.Context, sdk *sdkclient.Client, sessionID string) string {
+	if err := validateTSLValue(sessionID); err != nil {
+		r.logger.Warn().Err(err).Str("session_id", sessionID).Msg("invalid session_id for max seq query")
+		return ""
+	}
+	opts := types.NewListOptions().Size(1).Build()
+	opts.Search = fmt.Sprintf("session_id = '%s'", sessionID)
+	opts.OrderBy = "seq desc"
+	list, err := sdk.SessionMessages().List(ctx, opts)
+	if err != nil {
+		r.logger.Warn().Err(err).Str("session_id", sessionID).Msg("failed to resolve max seq for resume")
+		return ""
+	}
+	if len(list.Items) == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%d", list.Items[0].Seq)
+}
+
 func (r *SimpleKubeReconciler) buildSandboxEnv(ctx context.Context, session types.Session, projectName string, sdk *sdkclient.Client, providerNames []string) map[string]string {
 	workspacePath := "/workspace"
 	if r.cfg.OpenShellUseGateway {
@@ -960,6 +987,9 @@ func (r *SimpleKubeReconciler) buildSandboxEnv(ctx context.Context, session type
 
 	if session.StartTime != nil {
 		env["IS_RESUME"] = "true"
+		if maxSeq := r.resolveMaxSeq(ctx, sdk, session.ID); maxSeq != "" {
+			env["RESUME_AFTER_SEQ"] = maxSeq
+		}
 	}
 
 	if r.cfg.OpenShellUseGateway {
@@ -1131,6 +1161,15 @@ func (r *SimpleKubeReconciler) cleanupSessionPod(ctx context.Context, session ty
 	if err := r.nsKube().DeleteServicesByLabel(ctx, namespace, selector); err != nil && !k8serrors.IsNotFound(err) {
 		r.logger.Warn().Err(err).Msg("deleting services")
 	}
+	if err := r.nsKube().DeleteRoleBindingsByLabel(ctx, namespace, selector); err != nil && !k8serrors.IsNotFound(err) {
+		r.logger.Warn().Err(err).Msg("deleting role bindings")
+	}
+	if err := r.nsKube().DeleteRolesByLabel(ctx, namespace, selector); err != nil && !k8serrors.IsNotFound(err) {
+		r.logger.Warn().Err(err).Msg("deleting roles")
+	}
+	if err := r.nsKube().DeleteNetworkPoliciesByLabel(ctx, namespace, selector); err != nil && !k8serrors.IsNotFound(err) {
+		r.logger.Warn().Err(err).Msg("deleting network policies")
+	}
 
 	if err := r.provisioner.DeprovisionNamespace(ctx, namespace); err != nil {
 		r.logger.Warn().Err(err).Str("namespace", namespace).Msg("deprovisioning namespace")
@@ -1173,6 +1212,15 @@ func (r *SimpleKubeReconciler) cleanupSessionSandbox(ctx context.Context, sessio
 	}
 	if err := r.nsKube().DeleteServicesByLabel(ctx, namespace, selector); err != nil && !k8serrors.IsNotFound(err) {
 		r.logger.Warn().Err(err).Msg("deleting services")
+	}
+	if err := r.nsKube().DeleteRoleBindingsByLabel(ctx, namespace, selector); err != nil && !k8serrors.IsNotFound(err) {
+		r.logger.Warn().Err(err).Msg("deleting role bindings")
+	}
+	if err := r.nsKube().DeleteRolesByLabel(ctx, namespace, selector); err != nil && !k8serrors.IsNotFound(err) {
+		r.logger.Warn().Err(err).Msg("deleting roles")
+	}
+	if err := r.nsKube().DeleteNetworkPoliciesByLabel(ctx, namespace, selector); err != nil && !k8serrors.IsNotFound(err) {
+		r.logger.Warn().Err(err).Msg("deleting network policies")
 	}
 
 	return nil
@@ -1447,6 +1495,208 @@ func (r *SimpleKubeReconciler) ensureServiceAccount(ctx context.Context, namespa
 	}
 
 	r.logger.Debug().Str("service_account", name).Str("namespace", namespace).Msg("service account created")
+	return nil
+}
+
+func (r *SimpleKubeReconciler) ensureSessionRole(ctx context.Context, namespace string, session types.Session) error {
+	roleName := fmt.Sprintf("session-%s-role", safeResourceName(session.ID))
+	saName := serviceAccountName(session.ID)
+	rbName := fmt.Sprintf("session-%s-rb", safeResourceName(session.ID))
+	pName := podName(session.ID)
+
+	secretNames := r.sessionSecretNames(session.ID)
+	secretResourceNames := make([]interface{}, len(secretNames))
+	for i, n := range secretNames {
+		secretResourceNames[i] = n
+	}
+
+	var ownerRefs []interface{}
+	if sa, saErr := r.nsKube().GetServiceAccount(ctx, namespace, saName); saErr == nil {
+		ownerRefs = []interface{}{
+			map[string]interface{}{
+				"apiVersion":         "v1",
+				"kind":               "ServiceAccount",
+				"name":               saName,
+				"uid":                string(sa.GetUID()),
+				"blockOwnerDeletion": true,
+			},
+		}
+	}
+
+	role := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "rbac.authorization.k8s.io/v1",
+			"kind":       "Role",
+			"metadata": map[string]interface{}{
+				"name":            roleName,
+				"namespace":       namespace,
+				"labels":          sessionLabels(session.ID, session.ProjectID),
+				"ownerReferences": ownerRefs,
+			},
+			"rules": []interface{}{
+				map[string]interface{}{
+					"apiGroups":     []interface{}{""},
+					"resources":     []interface{}{"pods"},
+					"resourceNames": []interface{}{pName},
+					"verbs":         []interface{}{"get", "watch"},
+				},
+				map[string]interface{}{
+					"apiGroups":     []interface{}{""},
+					"resources":     []interface{}{"pods/log"},
+					"resourceNames": []interface{}{pName},
+					"verbs":         []interface{}{"get"},
+				},
+				map[string]interface{}{
+					"apiGroups":     []interface{}{""},
+					"resources":     []interface{}{"secrets"},
+					"resourceNames": secretResourceNames,
+					"verbs":         []interface{}{"get"},
+				},
+			},
+		},
+	}
+
+	existing, err := r.nsKube().GetRole(ctx, namespace, roleName)
+	if err == nil {
+		role.SetResourceVersion(existing.GetResourceVersion())
+		if _, updateErr := r.nsKube().UpdateRole(ctx, role); updateErr != nil {
+			return fmt.Errorf("updating role %s: %w", roleName, updateErr)
+		}
+	} else {
+		if _, createErr := r.nsKube().CreateRole(ctx, role); createErr != nil {
+			return fmt.Errorf("creating role %s: %w", roleName, createErr)
+		}
+	}
+
+	rb := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "rbac.authorization.k8s.io/v1",
+			"kind":       "RoleBinding",
+			"metadata": map[string]interface{}{
+				"name":            rbName,
+				"namespace":       namespace,
+				"labels":          sessionLabels(session.ID, session.ProjectID),
+				"ownerReferences": ownerRefs,
+			},
+			"roleRef": map[string]interface{}{
+				"apiGroup": "rbac.authorization.k8s.io",
+				"kind":     "Role",
+				"name":     roleName,
+			},
+			"subjects": []interface{}{
+				map[string]interface{}{
+					"kind":      "ServiceAccount",
+					"name":      saName,
+					"namespace": namespace,
+				},
+			},
+		},
+	}
+
+	existingRB, rbErr := r.nsKube().GetRoleBinding(ctx, namespace, rbName)
+	if rbErr == nil {
+		rb.SetResourceVersion(existingRB.GetResourceVersion())
+		if _, updateErr := r.nsKube().UpdateRoleBinding(ctx, namespace, rb); updateErr != nil {
+			return fmt.Errorf("updating role binding %s: %w", rbName, updateErr)
+		}
+	} else {
+		if _, createErr := r.nsKube().CreateRoleBinding(ctx, namespace, rb); createErr != nil {
+			return fmt.Errorf("creating role binding %s: %w", rbName, createErr)
+		}
+	}
+
+	r.logger.Debug().Str("role", roleName).Str("namespace", namespace).Msg("session RBAC role and binding reconciled")
+	return nil
+}
+
+func (r *SimpleKubeReconciler) sessionSecretNames(sessionID string) []string {
+	return []string{
+		fmt.Sprintf("session-%s-credentials", safeResourceName(sessionID)),
+	}
+}
+
+func (r *SimpleKubeReconciler) ensureSessionNetworkPolicy(ctx context.Context, namespace string, session types.Session) error {
+	name := fmt.Sprintf("session-%s-isolation", safeResourceName(session.ID))
+	saName := serviceAccountName(session.ID)
+	cpNS := r.cfg.CPRuntimeNamespace
+
+	var ownerRefs []interface{}
+	if sa, saErr := r.nsKube().GetServiceAccount(ctx, namespace, saName); saErr == nil {
+		ownerRefs = []interface{}{
+			map[string]interface{}{
+				"apiVersion":         "v1",
+				"kind":               "ServiceAccount",
+				"name":               saName,
+				"uid":                string(sa.GetUID()),
+				"blockOwnerDeletion": true,
+			},
+		}
+	}
+
+	np := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "networking.k8s.io/v1",
+			"kind":       "NetworkPolicy",
+			"metadata": map[string]interface{}{
+				"name":            name,
+				"namespace":       namespace,
+				"labels":          sessionLabels(session.ID, session.ProjectID),
+				"ownerReferences": ownerRefs,
+			},
+			"spec": map[string]interface{}{
+				"podSelector": map[string]interface{}{
+					"matchLabels": map[string]interface{}{
+						"ambient-code.io/session-id": session.ID,
+					},
+				},
+				"policyTypes": []interface{}{"Ingress"},
+				"ingress": []interface{}{
+					map[string]interface{}{
+						"from": []interface{}{
+							map[string]interface{}{
+								"namespaceSelector": map[string]interface{}{
+									"matchLabels": map[string]interface{}{
+										"kubernetes.io/metadata.name": cpNS,
+									},
+								},
+							},
+						},
+						"ports": []interface{}{
+							map[string]interface{}{
+								"protocol": "TCP",
+								"port":     int64(8001),
+							},
+						},
+					},
+					map[string]interface{}{
+						"from": []interface{}{
+							map[string]interface{}{
+								"podSelector": map[string]interface{}{
+									"matchLabels": map[string]interface{}{
+										"ambient-code.io/session-id": session.ID,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	existing, err := r.nsKube().GetNetworkPolicy(ctx, namespace, name)
+	if err == nil {
+		np.SetResourceVersion(existing.GetResourceVersion())
+		if _, updateErr := r.nsKube().UpdateNetworkPolicy(ctx, np); updateErr != nil {
+			return fmt.Errorf("updating session network policy %s: %w", name, updateErr)
+		}
+	} else {
+		if _, createErr := r.nsKube().CreateNetworkPolicy(ctx, np); createErr != nil {
+			return fmt.Errorf("creating session network policy %s: %w", name, createErr)
+		}
+	}
+
+	r.logger.Debug().Str("policy", name).Str("namespace", namespace).Msg("session isolation network policy reconciled")
 	return nil
 }
 
@@ -1778,6 +2028,9 @@ func (r *SimpleKubeReconciler) buildEnv(ctx context.Context, session types.Sessi
 
 	if session.StartTime != nil {
 		env = append(env, envVar("IS_RESUME", "true"))
+		if maxSeq := r.resolveMaxSeq(ctx, sdk, session.ID); maxSeq != "" {
+			env = append(env, envVar("RESUME_AFTER_SEQ", maxSeq))
+		}
 	}
 
 	if r.cfg.AnthropicAPIKey != "" {

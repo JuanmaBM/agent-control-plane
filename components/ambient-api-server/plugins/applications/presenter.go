@@ -1,6 +1,10 @@
 package applications
 
 import (
+	"time"
+
+	"github.com/golang/glog"
+
 	"github.com/ambient-code/platform/components/ambient-api-server/pkg/api/openapi"
 	"github.com/openshift-online/rh-trex-ai/pkg/api"
 	"github.com/openshift-online/rh-trex-ai/pkg/api/presenters"
@@ -65,7 +69,44 @@ func PresentApplication(app *Application) openapi.Application {
 		OperationMessage:      app.OperationMessage,
 		ResourceStatus:        app.ResourceStatus,
 		Conditions:            app.Conditions,
+		LastSyncedAt:          parseOptionalTime(app.LastSyncedAt),
 		Labels:                app.Labels,
 		Annotations:           app.Annotations,
 	}
+}
+
+type ApplicationStatusResponse struct {
+	SyncStatus       *string    `json:"sync_status,omitempty"`
+	HealthStatus     *string    `json:"health_status,omitempty"`
+	SyncRevision     *string    `json:"sync_revision,omitempty"`
+	OperationPhase   *string    `json:"operation_phase,omitempty"`
+	OperationMessage *string    `json:"operation_message,omitempty"`
+	ResourceStatus   *string    `json:"resource_status,omitempty"`
+	Conditions       *string    `json:"conditions,omitempty"`
+	LastSyncedAt     *time.Time `json:"last_synced_at,omitempty"`
+}
+
+func PresentApplicationStatus(app *Application) ApplicationStatusResponse {
+	return ApplicationStatusResponse{
+		SyncStatus:       app.SyncStatus,
+		HealthStatus:     app.HealthStatus,
+		SyncRevision:     app.SyncRevision,
+		OperationPhase:   app.OperationPhase,
+		OperationMessage: app.OperationMessage,
+		ResourceStatus:   app.ResourceStatus,
+		Conditions:       app.Conditions,
+		LastSyncedAt:     parseOptionalTime(app.LastSyncedAt),
+	}
+}
+
+func parseOptionalTime(s *string) *time.Time {
+	if s == nil || *s == "" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, *s)
+	if err != nil {
+		glog.Warningf("parseOptionalTime: failed to parse %q as RFC3339: %v", *s, err)
+		return nil
+	}
+	return &t
 }

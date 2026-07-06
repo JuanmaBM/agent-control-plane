@@ -295,6 +295,7 @@ function CollaboratorRow({
   isCurrentUser,
   isSoleOwner,
   readOnly,
+  projectId,
 }: {
   collaborator: ResolvedCollaborator
   assignableRoles: DomainRole[]
@@ -302,6 +303,7 @@ function CollaboratorRow({
   isCurrentUser: boolean
   isSoleOwner: boolean
   readOnly: boolean
+  projectId: string
 }) {
   const router = useRouter()
   const patchBinding = usePatchRoleBinding()
@@ -437,6 +439,7 @@ function CollaboratorRow({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
     </>
   )
 }
@@ -616,6 +619,7 @@ export function CollaboratorManager({
                   isCurrentUser={isCurrentUser}
                   isSoleOwner={isSoleOwner}
                   readOnly={effectiveReadOnly}
+                  projectId={projectId}
                 />
               )
             })}

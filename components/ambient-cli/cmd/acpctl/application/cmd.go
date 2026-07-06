@@ -396,14 +396,7 @@ var syncCmd = &cobra.Command{
 			return err
 		}
 
-		app, err := client.Applications().Get(ctx, appID)
-		if err != nil {
-			return fmt.Errorf("get application %q: %w", args[0], err)
-		}
-
-		syncPatch := sdktypes.NewApplicationPatchBuilder()
-		syncPatch = syncPatch.Name(app.Name)
-		_, err = client.Applications().Update(ctx, appID, syncPatch.Build())
+		result, err := client.Applications().Sync(ctx, appID)
 		if err != nil {
 			return fmt.Errorf("sync application: %w", err)
 		}
@@ -414,13 +407,8 @@ var syncCmd = &cobra.Command{
 		}
 		printer := output.NewPrinter(format, cmd.OutOrStdout())
 
-		refreshed, err := client.Applications().Get(ctx, appID)
-		if err != nil {
-			return fmt.Errorf("refresh application after sync: %w", err)
-		}
-
 		if printer.Format() == output.FormatJSON {
-			return printer.PrintJSON(refreshed)
+			return printer.PrintJSON(result)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "application/%s sync triggered\n", appName)
 		return nil
@@ -456,9 +444,9 @@ var refreshCmd = &cobra.Command{
 			return err
 		}
 
-		app, err := client.Applications().Get(ctx, appID)
+		app, err := client.Applications().Refresh(ctx, appID)
 		if err != nil {
-			return fmt.Errorf("get application %q: %w", args[0], err)
+			return fmt.Errorf("refresh application %q: %w", args[0], err)
 		}
 
 		format, err := output.ParseFormat(refreshArgs.outputFormat)
