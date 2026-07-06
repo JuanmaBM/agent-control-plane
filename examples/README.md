@@ -12,7 +12,8 @@ examples/
 │       ├── security-reviewer.yaml
 │       ├── jira-simple-whoami.yaml
 │       ├── jira-simple-whoami-with-skill-payload.yaml
-│       └── pr-reviewer.yaml
+│       ├── pr-reviewer.yaml
+│       └── jira-issue-categorizer.yaml
 └── overlays/
     ├── tenant-a/        # Development tenant
     └── tenant-b/        # Staging tenant
@@ -70,16 +71,18 @@ The token needs at minimum: `repo` (read), `pull_requests` (read).
 
 > Repeat for `tenant-b` by replacing `-n tenant-a` with `-n tenant-b`.
 
-### Jira (required by `jira-simple-whoami` and `jira-simple-whoami-with-skill-payload`)
+### Jira (required by `jira-simple-whoami`, `jira-simple-whoami-with-skill-payload`, and `jira-issue-categorizer`)
 
 ```bash
 kubectl create secret generic jira \
-  --from-literal=JIRA_USERNAME="your-email@example.com" \
-  --from-literal=JIRA_API_TOKEN="<your-jira-api-token>" \
+  --from-literal=JIRA_USERNAME="your-email@redhat.com" \
+  --from-literal=JIRA_API_TOKEN=$(cat ~/jira-token.txt) \
   -n tenant-a
 ```
 
-Generate a Jira API token at: https://id.atlassian.com/manage-profile/security/api-tokens
+Store your API token in `~/jira-token.txt` before running the command. Generate one at: https://id.atlassian.com/manage-profile/security/api-tokens
+
+> Repeat for `tenant-b` by replacing `-n tenant-a` with `-n tenant-b`.
 
 ---
 
@@ -173,6 +176,42 @@ A GitHub Pull Request reviewer. Fetches PR metadata, diffs, and comments via the
 ```
 Review PR #42 in my-org/my-repo
 ```
+
+---
+
+### `jira-issue-categorizer`
+
+Automatically categorizes Jira issues into Sankey Activity Types using AI. Inspired by the [jira-ai-categorizer](https://gitlab.cee.redhat.com/hcm-engprod/jira-ai-categorizer) project, reimplemented as an agent — eliminating the need for a separate Python script and external LLM endpoint.
+
+**Providers:** `vertex`, `jira`
+
+**Prerequisites:** `jira` secret in the tenant namespace (see above). The Jira URL is pre-configured to `https://redhat.atlassian.net` in the agent definition.
+
+**What it does:**
+1. Searches for issues in the specified project(s) using JQL
+2. Reads each issue's summary and description
+3. Classifies it into one of six Sankey Activity Types using an injected classification guide:
+   - `Associate Wellness & Development`
+   - `Incidents & Support`
+   - `Security & Compliance`
+   - `Quality / Stability / Reliability`
+   - `Future Sustainability`
+   - `Product / Portfolio Work`
+4. In dry-run mode (default), reports what would be set without making changes
+5. Optionally supports hierarchical propagation: propagates the Activity Type from parent issues down to all descendants
+
+**Session prompt examples:**
+```
+Categorize issues in project RHCLOUD. Dry-run mode ON.
+```
+```
+Categorize issues in project RHCLOUD for components Clowder and Bonfire. Dry-run mode ON.
+```
+```
+Categorize issues in project HPSTRAT using hierarchical mode. Apply changes.
+```
+
+> **Note:** By default the agent runs in dry-run mode and will not write any changes to Jira unless explicitly instructed otherwise in the session prompt.
 
 ---
 
