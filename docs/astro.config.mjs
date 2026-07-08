@@ -41,6 +41,7 @@ export default defineConfig({
             { slug: 'getting-started' },
             { slug: 'getting-started/quickstart-ui' },
             { slug: 'getting-started/concepts' },
+            { slug: 'getting-started/session-config' },
             { slug: 'getting-started/cli' },
           ],
         },
