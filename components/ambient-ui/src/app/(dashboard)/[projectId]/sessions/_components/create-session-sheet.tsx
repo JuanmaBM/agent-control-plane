@@ -13,6 +13,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Select,
   SelectContent,
@@ -45,6 +46,7 @@ export function CreateSessionSheet({
   const [temperature, setTemperature] = useState('')
   const [maxTokens, setMaxTokens] = useState('')
   const [timeout, setTimeout] = useState('')
+  const [stopOnRunFinished, setStopOnRunFinished] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const agents = agentsData?.items ?? []
@@ -58,6 +60,7 @@ export function CreateSessionSheet({
     setTemperature('')
     setMaxTokens('')
     setTimeout('')
+    setStopOnRunFinished(true)
     setError(null)
   }
 
@@ -79,6 +82,7 @@ export function CreateSessionSheet({
       name: name.trim(),
       projectId,
       agentId,
+      stopOnRunFinished,
     }
     if (prompt.trim()) request.prompt = prompt.trim()
     if (model) request.model = model
@@ -178,6 +182,27 @@ export function CreateSessionSheet({
             <p className="text-xs text-muted-foreground">
               Overrides the agent&apos;s configured default model
             </p>
+          </div>
+
+          <div className="flex items-start gap-3">
+            <Checkbox
+              id="stop-on-run-finished"
+              checked={stopOnRunFinished}
+              onCheckedChange={(checked) => setStopOnRunFinished(checked === true)}
+              className="mt-0.5"
+            />
+            <div className="space-y-0.5">
+              <label
+                htmlFor="stop-on-run-finished"
+                className="text-sm font-medium cursor-pointer"
+              >
+                Stop session when agent is finished
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Automatically terminate and clean up the sandbox when the agent completes its task.
+                Uncheck to keep the sandbox running after the run ends (useful for debugging).
+              </p>
+            </div>
           </div>
 
           <button

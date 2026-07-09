@@ -33,6 +33,8 @@ function mapDomainCreateToSdk(request: DomainSessionCreateRequest): SessionCreat
   if (request.maxTokens !== undefined) sdkReq.llm_max_tokens = request.maxTokens
   if (request.timeout !== undefined) sdkReq.timeout = request.timeout
   if (request.annotations) sdkReq.annotations = JSON.stringify(request.annotations)
+  // Default to true if not explicitly set — auto-terminate on completion.
+  sdkReq.stop_on_run_finished = request.stopOnRunFinished ?? true
   return sdkReq
 }
 

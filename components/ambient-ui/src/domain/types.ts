@@ -177,6 +177,7 @@ export type DomainSessionCreateRequest = {
   maxTokens?: number
   timeout?: number
   annotations?: Record<string, string>
+  stopOnRunFinished?: boolean
 }
 
 export type DomainAgentCreateRequest = {
