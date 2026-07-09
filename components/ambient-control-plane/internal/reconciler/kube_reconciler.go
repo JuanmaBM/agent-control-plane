@@ -199,11 +199,7 @@ func (r *SimpleKubeReconciler) Reconcile(ctx context.Context, event informer.Res
 		case PhaseFailed:
 			return r.deprovisionSession(ctx, session, session.Phase)
 		case PhaseCompleted:
-			// FIXME(#223): Enable gateway sandbox cleanup once session lifecycle is ironed out.
-			// Merge back into the PhaseFailed case above to auto-delete the sandbox on completion.
-			if !r.cfg.OpenShellUseGateway {
-				return r.deprovisionSession(ctx, session, session.Phase)
-			}
+			return r.deprovisionSession(ctx, session, session.Phase)
 		}
 	case informer.EventDeleted:
 		return r.cleanupSession(ctx, session)
@@ -366,7 +362,8 @@ func (r *SimpleKubeReconciler) provisionSessionSandbox(ctx context.Context, sess
 			payloads = agent.Payloads
 		}
 		payloads = r.appendInitialPromptPayload(ctx, session, sdk, payloads)
-		go r.execAfterReady(namespace, sbxName, session.ID, entrypoint, sdk, execEnv, payloads)
+		stopOnRunFinished := sessionStopOnRunFinished(session)
+		go r.execAfterReady(namespace, sbxName, session.ID, stopOnRunFinished, entrypoint, sdk, execEnv, payloads)
 		r.updateSessionPhaseWithNamespace(ctx, session, PhaseCreating, namespace)
 		return nil
 	}
@@ -427,10 +424,18 @@ func (r *SimpleKubeReconciler) provisionSessionSandbox(ctx context.Context, sess
 		payloads = agent.Payloads
 	}
 	payloads = r.appendInitialPromptPayload(ctx, session, sdk, payloads)
-	go r.execAfterReady(namespace, sbxName, session.ID, entrypoint, sdk, execEnv, payloads)
+	stopOnRunFinished := sessionStopOnRunFinished(session)
+	go r.execAfterReady(namespace, sbxName, session.ID, stopOnRunFinished, entrypoint, sdk, execEnv, payloads)
 
 	r.updateSessionPhaseWithNamespace(ctx, session, PhaseCreating, namespace)
 	return nil
+}
+
+// sessionStopOnRunFinished returns the effective stop_on_run_finished value for a session.
+// The default is true (auto-terminate on completion) — sessions created before the field
+// existed also get true since the migration back-fills NULL→true.
+func sessionStopOnRunFinished(session types.Session) bool {
+	return session.StopOnRunFinished
 }
 
 func (r *SimpleKubeReconciler) injectACPInternalPolicy(ctx context.Context, namespace, sandboxName string) error {
@@ -617,7 +622,7 @@ func (r *SimpleKubeReconciler) sandboxReadinessTimeout() time.Duration {
 	return 600 * time.Second
 }
 
-func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID string, entrypoint []string, sdk *sdkclient.Client, execEnv map[string]string, payloads []types.Payload) {
+func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID string, stopOnRunFinished bool, entrypoint []string, sdk *sdkclient.Client, execEnv map[string]string, payloads []types.Payload) {
 	timeout := r.sandboxReadinessTimeout()
 	pollCtx, pollCancel := context.WithTimeout(context.Background(), timeout)
 	defer pollCancel()
@@ -804,13 +809,28 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 				failSession(fmt.Sprintf("failed to start runner exec: %v", err))
 				return
 			}
-			// FIXME(#223): Mark session PhaseCompleted and set completion_time here once
-			// session lifecycle is ironed out. Currently left Running so the sandbox
-			// isn't orphaned (Completed triggers deprovision).
 			r.logger.Info().
 				Str("sandbox", sbxName).
 				Str("session_id", sessionID).
+				Bool("stop_on_run_finished", stopOnRunFinished).
 				Msg("runner exec stream finished")
+
+			if stopOnRunFinished {
+				// Transition the session to Completed. The Reconcile() loop will
+				// pick up the PhaseCompleted event and call deprovisionSessionSandbox,
+				// which deletes the sandbox and records completion_time.
+				completeCtx, completeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer completeCancel()
+				now := time.Now()
+				if _, err := sdk.Sessions().UpdateStatus(completeCtx, sessionID, map[string]interface{}{
+					"phase":           PhaseCompleted,
+					"completion_time": &now,
+				}); err != nil {
+					r.logger.Warn().Err(err).Str("session_id", sessionID).Msg("failed to mark session completed after run finished")
+				} else {
+					r.logger.Info().Str("session_id", sessionID).Msg("session marked Completed after run finished")
+				}
+			}
 			return
 		}
 	}
@@ -1396,6 +1416,13 @@ func (r *SimpleKubeReconciler) buildSandboxEnv(ctx context.Context, session type
 	}
 	if session.RepoURL != "" {
 		env["REPOS_JSON"] = fmt.Sprintf(`[{"url":%q}]`, session.RepoURL)
+	}
+
+	// Inject STOP_ON_RUN_FINISHED so the runner knows to exit cleanly when the
+	// task is complete. The control plane then marks the session Completed and
+	// triggers sandbox cleanup via the Reconcile() → deprovisionSession() path.
+	if sessionStopOnRunFinished(session) {
+		env["STOP_ON_RUN_FINISHED"] = "true"
 	}
 	if r.cfg.HTTPProxy != "" {
 		env["HTTP_PROXY"] = r.cfg.HTTPProxy
@@ -2523,7 +2550,7 @@ func (r *SimpleKubeReconciler) buildEnv(ctx context.Context, session types.Sessi
 		env = append(env, envVar("NO_PROXY", r.cfg.NoProxy))
 	}
 
-	if session.SourceScheduledSessionID != "" {
+	if sessionStopOnRunFinished(session) {
 		env = append(env, envVar("STOP_ON_RUN_FINISHED", "true"))
 	}
 
