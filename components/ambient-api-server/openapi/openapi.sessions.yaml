@@ -451,6 +451,13 @@ components:
             agent_id:
               type: string
               description: The Agent that owns this session. Immutable after creation.
+            stop_on_run_finished:
+              type: boolean
+              default: true
+              description: >-
+                When true (default), the sandbox is automatically terminated and resources
+                are cleaned up when the agent's task completes. Set to false to keep the
+                sandbox running after the run finishes (useful for debugging).
             project_id:
               type: string
               description: Immutable after creation. Set at creation time only.
@@ -551,6 +558,11 @@ components:
           type: string
         annotations:
           type: string
+        stop_on_run_finished:
+          type: boolean
+          description: >-
+            When true, the sandbox is automatically terminated when the agent's task
+            completes. When false, the sandbox remains running after the run finishes.
     SessionStatusPatchRequest:
       type: object
       properties:

@@ -33,6 +33,7 @@ func ConvertSession(session openapi.Session) *Session {
 	c.SessionAnnotations = session.Annotations
 	c.ProjectId = session.ProjectId
 	c.AgentId = session.AgentId
+	c.StopOnRunFinished = session.StopOnRunFinished
 
 	if session.CreatedAt != nil {
 		c.CreatedAt = *session.CreatedAt
@@ -73,6 +74,7 @@ func PresentSession(session *Session) openapi.Session {
 		Annotations:              session.SessionAnnotations,
 		ProjectId:                session.ProjectId,
 		AgentId:                  session.AgentId,
+		StopOnRunFinished:        session.StopOnRunFinished,
 		Phase:                    session.Phase,
 		StartTime:                session.StartTime,
 		CompletionTime:           session.CompletionTime,

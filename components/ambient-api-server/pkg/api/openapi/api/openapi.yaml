@@ -5537,6 +5537,13 @@ components:
           agent_id:
             description: The Agent that owns this session. Immutable after creation.
             type: string
+          stop_on_run_finished:
+            default: true
+            description: "When true (default), the sandbox is automatically terminated\
+              \ and resources are cleaned up when the agent's task completes. Set\
+              \ to false to keep the sandbox running after the run finishes (useful\
+              \ for debugging)."
+            type: boolean
           project_id:
             description: Immutable after creation. Set at creation time only.
             type: string
@@ -5607,6 +5614,7 @@ components:
         sandbox_policy_snapshot: sandbox_policy_snapshot
         timeout: 5
         environment_variables: environment_variables
+        stop_on_run_finished: true
         kube_cr_uid: kube_cr_uid
         sdk_restart_count: 7
         updated_at: 2000-01-23T04:56:07.000+00:00
@@ -5662,6 +5670,7 @@ components:
           sandbox_policy_snapshot: sandbox_policy_snapshot
           timeout: 5
           environment_variables: environment_variables
+          stop_on_run_finished: true
           kube_cr_uid: kube_cr_uid
           sdk_restart_count: 7
           updated_at: 2000-01-23T04:56:07.000+00:00
@@ -5702,6 +5711,7 @@ components:
           sandbox_policy_snapshot: sandbox_policy_snapshot
           timeout: 5
           environment_variables: environment_variables
+          stop_on_run_finished: true
           kube_cr_uid: kube_cr_uid
           sdk_restart_count: 7
           updated_at: 2000-01-23T04:56:07.000+00:00
@@ -5743,6 +5753,7 @@ components:
         timeout: 0
         labels: labels
         environment_variables: environment_variables
+        stop_on_run_finished: true
         bot_account_name: bot_account_name
         repos: repos
         name: name
@@ -5782,6 +5793,11 @@ components:
           type: string
         annotations:
           type: string
+        stop_on_run_finished:
+          description: "When true, the sandbox is automatically terminated when the\
+            \ agent's task completes. When false, the sandbox remains running after\
+            \ the run finishes."
+          type: boolean
       type: object
     SessionStatusPatchRequest:
       example:
@@ -6694,6 +6710,7 @@ components:
           sandbox_policy_snapshot: sandbox_policy_snapshot
           timeout: 5
           environment_variables: environment_variables
+          stop_on_run_finished: true
           kube_cr_uid: kube_cr_uid
           sdk_restart_count: 7
           updated_at: 2000-01-23T04:56:07.000+00:00
@@ -6734,6 +6751,7 @@ components:
           sandbox_policy_snapshot: sandbox_policy_snapshot
           timeout: 5
           environment_variables: environment_variables
+          stop_on_run_finished: true
           kube_cr_uid: kube_cr_uid
           sdk_restart_count: 7
           updated_at: 2000-01-23T04:56:07.000+00:00
@@ -6785,6 +6803,7 @@ components:
           sandbox_policy_snapshot: sandbox_policy_snapshot
           timeout: 5
           environment_variables: environment_variables
+          stop_on_run_finished: true
           kube_cr_uid: kube_cr_uid
           sdk_restart_count: 7
           updated_at: 2000-01-23T04:56:07.000+00:00

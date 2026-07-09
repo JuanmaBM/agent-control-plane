@@ -31,6 +31,7 @@ type Session struct {
 	SessionAnnotations       *string    `json:"annotations" gorm:"column:annotations"`
 	ProjectId                *string    `json:"project_id"`
 	AgentId                  *string    `json:"agent_id"`
+	StopOnRunFinished        *bool      `json:"stop_on_run_finished"`
 
 	Phase                 *string    `json:"phase"`
 	StartTime             *time.Time `json:"start_time"`
@@ -75,6 +76,10 @@ func (d *Session) BeforeCreate(tx *gorm.DB) error {
 		defaultTokens := int32(4000)
 		d.LlmMaxTokens = &defaultTokens
 	}
+	if d.StopOnRunFinished == nil {
+		defaultStop := true
+		d.StopOnRunFinished = &defaultStop
+	}
 
 	return nil
 }
@@ -96,6 +101,7 @@ type SessionPatchRequest struct {
 	EnvironmentVariables *string  `json:"environment_variables,omitempty"`
 	SessionLabels        *string  `json:"labels,omitempty"`
 	SessionAnnotations   *string  `json:"annotations,omitempty"`
+	StopOnRunFinished    *bool    `json:"stop_on_run_finished,omitempty"`
 }
 
 type SessionStatusPatchRequest struct {

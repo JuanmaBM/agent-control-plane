@@ -52,6 +52,8 @@ type Session struct {
 	Annotations          *string    `json:"annotations,omitempty"`
 	// The Agent that owns this session. Immutable after creation.
 	AgentId *string `json:"agent_id,omitempty"`
+	// When true (default), the sandbox is automatically terminated and resources are cleaned up when the agent's task completes. Set to false to keep the sandbox running after the run finishes (useful for debugging).
+	StopOnRunFinished *bool `json:"stop_on_run_finished,omitempty"`
 	// Immutable after creation. Set at creation time only.
 	ProjectId          *string    `json:"project_id,omitempty"`
 	Phase              *string    `json:"phase,omitempty"`
@@ -82,6 +84,8 @@ type _Session Session
 func NewSession(name string) *Session {
 	this := Session{}
 	this.Name = name
+	var stopOnRunFinished bool = true
+	this.StopOnRunFinished = &stopOnRunFinished
 	return &this
 }
 
@@ -90,6 +94,8 @@ func NewSession(name string) *Session {
 // but it doesn't guarantee that properties required by API are set
 func NewSessionWithDefaults() *Session {
 	this := Session{}
+	var stopOnRunFinished bool = true
+	this.StopOnRunFinished = &stopOnRunFinished
 	return &this
 }
 
@@ -885,6 +891,38 @@ func (o *Session) SetAgentId(v string) {
 	o.AgentId = &v
 }
 
+// GetStopOnRunFinished returns the StopOnRunFinished field value if set, zero value otherwise.
+func (o *Session) GetStopOnRunFinished() bool {
+	if o == nil || IsNil(o.StopOnRunFinished) {
+		var ret bool
+		return ret
+	}
+	return *o.StopOnRunFinished
+}
+
+// GetStopOnRunFinishedOk returns a tuple with the StopOnRunFinished field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *Session) GetStopOnRunFinishedOk() (*bool, bool) {
+	if o == nil || IsNil(o.StopOnRunFinished) {
+		return nil, false
+	}
+	return o.StopOnRunFinished, true
+}
+
+// HasStopOnRunFinished returns a boolean if a field has been set.
+func (o *Session) HasStopOnRunFinished() bool {
+	if o != nil && !IsNil(o.StopOnRunFinished) {
+		return true
+	}
+
+	return false
+}
+
+// SetStopOnRunFinished gets a reference to the given bool and assigns it to the StopOnRunFinished field.
+func (o *Session) SetStopOnRunFinished(v bool) {
+	o.StopOnRunFinished = &v
+}
+
 // GetProjectId returns the ProjectId field value if set, zero value otherwise.
 func (o *Session) GetProjectId() string {
 	if o == nil || IsNil(o.ProjectId) {
@@ -1447,6 +1485,9 @@ func (o Session) ToMap() (map[string]interface{}, error) {
 	}
 	if !IsNil(o.AgentId) {
 		toSerialize["agent_id"] = o.AgentId
+	}
+	if !IsNil(o.StopOnRunFinished) {
+		toSerialize["stop_on_run_finished"] = o.StopOnRunFinished
 	}
 	if !IsNil(o.ProjectId) {
 		toSerialize["project_id"] = o.ProjectId

@@ -29,6 +29,7 @@ Name | Type | Description | Notes
 **Labels** | Pointer to **string** |  | [optional] 
 **Annotations** | Pointer to **string** |  | [optional] 
 **AgentId** | Pointer to **string** | The Agent that owns this session. Immutable after creation. | [optional] 
+**StopOnRunFinished** | Pointer to **bool** | When true (default), the sandbox is automatically terminated and resources are cleaned up when the agent&#39;s task completes. Set to false to keep the sandbox running after the run finishes (useful for debugging). | [optional] [default to true]
 **ProjectId** | Pointer to **string** | Immutable after creation. Set at creation time only. | [optional] 
 **Phase** | Pointer to **string** |  | [optional] [readonly] 
 **StartTime** | Pointer to **time.Time** |  | [optional] [readonly] 
@@ -683,6 +684,31 @@ SetAgentId sets AgentId field to given value.
 `func (o *Session) HasAgentId() bool`
 
 HasAgentId returns a boolean if a field has been set.
+
+### GetStopOnRunFinished
+
+`func (o *Session) GetStopOnRunFinished() bool`
+
+GetStopOnRunFinished returns the StopOnRunFinished field if non-nil, zero value otherwise.
+
+### GetStopOnRunFinishedOk
+
+`func (o *Session) GetStopOnRunFinishedOk() (*bool, bool)`
+
+GetStopOnRunFinishedOk returns a tuple with the StopOnRunFinished field if it's non-nil, zero value otherwise
+and a boolean to check if the value has been set.
+
+### SetStopOnRunFinished
+
+`func (o *Session) SetStopOnRunFinished(v bool)`
+
+SetStopOnRunFinished sets StopOnRunFinished field to given value.
+
+### HasStopOnRunFinished
+
+`func (o *Session) HasStopOnRunFinished() bool`
+
+HasStopOnRunFinished returns a boolean if a field has been set.
 
 ### GetProjectId
 
