@@ -14,6 +14,15 @@ def _reset_activated():
     autolog_mod._activated = False
 
 
+@pytest.fixture(autouse=True)
+def _bypass_dns_check():
+    with patch(
+        "ambient_runner.observability_config.check_mlflow_tracking_reachable",
+        return_value=True,
+    ):
+        yield
+
+
 def test_tracking_uri_default_activates_generic_and_genai_autologging():
     mock_mlflow = MagicMock()
     mock_mlflow.anthropic = MagicMock()
@@ -250,21 +259,6 @@ def test_genai_integration_is_imported_before_autologging():
 
     import_module.assert_called_once_with("mlflow.anthropic")
     imported_anthropic.autolog.assert_called_once()
-
-
-def test_openshell_resolve_token_skips_explicit_tracking_setup():
-    mock_mlflow = MagicMock()
-    env = {"MLFLOW_TRACKING_URI": "openshell:resolve:env:MLFLOW_TRACKING_URI"}
-
-    with (
-        patch.dict(os.environ, env, clear=True),
-        patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-    ):
-        assert activate_mlflow_autologging() is True
-
-    mock_mlflow.set_tracking_uri.assert_not_called()
-    mock_mlflow.set_experiment.assert_not_called()
-    mock_mlflow.autolog.assert_called_once()
 
 
 def test_idempotent_second_call_does_not_repatch():

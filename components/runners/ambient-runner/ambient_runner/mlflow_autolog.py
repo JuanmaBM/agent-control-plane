@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_EXPERIMENT_NAME = "ambient-code-sessions"
 _DEFAULT_GENAI_INTEGRATIONS = ("anthropic", "openai")
 _EXPLICIT_FALSE_VALUES = ("0", "false", "no", "off")
-_OPENSHELL_RESOLVE_PREFIX = "openshell:resolve:env:"
 _BASE_AUTOLOG_TAGS = {
     "acp.runner": "ambient-runner",
 }
@@ -85,17 +84,11 @@ def _autolog_tags(extra_tags: Mapping[str, str] | None) -> dict[str, str]:
     return tags
 
 
-def _is_openshell_token(value: str) -> bool:
-    return value.startswith(_OPENSHELL_RESOLVE_PREFIX)
+def _configure_tracking(mlflow_module: MLflowModule, tracking_uri: str) -> bool:
+    from ambient_runner.observability_config import check_mlflow_tracking_reachable
 
-
-def _configure_tracking(mlflow_module: MLflowModule, tracking_uri: str) -> None:
-    if _is_openshell_token(tracking_uri):
-        logger.info(
-            "MLflow autologging: openshell resolve tokens detected; "
-            "deferring tracking config to runtime env resolution"
-        )
-        return
+    if not check_mlflow_tracking_reachable(tracking_uri):
+        return False
 
     experiment_name = (
         os.getenv("MLFLOW_EXPERIMENT_NAME", _DEFAULT_EXPERIMENT_NAME).strip()
@@ -104,11 +97,13 @@ def _configure_tracking(mlflow_module: MLflowModule, tracking_uri: str) -> None:
     try:
         mlflow_module.set_tracking_uri(tracking_uri)
         mlflow_module.set_experiment(experiment_name)
+        return True
     except Exception:
         logger.warning(
             "MLflow autologging: tracking URI or experiment setup failed; "
             "continuing with autologging enabled"
         )
+        return True
 
 
 def _configure_async_logging(mlflow_module: MLflowModule) -> None:
@@ -214,7 +209,8 @@ def activate_mlflow_autologging(extra_tags: Mapping[str, str] | None = None) -> 
         logger.warning("MLflow autologging requested but mlflow is not installed")
         return False
 
-    _configure_tracking(mlflow, tracking_uri)
+    if not _configure_tracking(mlflow, tracking_uri):
+        return False
     _configure_async_logging(mlflow)
     if not _configure_trace_masking(mlflow):
         return False
