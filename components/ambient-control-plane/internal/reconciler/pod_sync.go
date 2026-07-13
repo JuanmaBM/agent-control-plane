@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	podSyncInterval    = 15 * time.Second
+	podSyncInterval    = 5 * time.Second
 	managedLabelFilter = LabelManaged + "=true," + LabelManagedBy + "=ambient-control-plane"
 )
 
@@ -169,8 +169,18 @@ func (s *PodStatusSyncer) syncSandboxStatus(ctx context.Context, sdk *sdkclient.
 	if err != nil {
 		if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
 			if session.Phase == PhaseRunning || session.Phase == PhaseCreating {
-				s.logger.Warn().Str("session_id", session.ID).Str("sandbox", sbxName).Msg("sandbox not found, marking session failed")
-				s.updateSessionPhase(ctx, sdk, session, PhaseFailed, nil)
+				s.logger.Warn().
+					Str("session_id", session.ID).
+					Str("sandbox", sbxName).
+					Str("phase", session.Phase).
+					Msg("sandbox deleted externally; marking session failed")
+				condJSON, _ := json.Marshal([]map[string]string{{
+					"type":    "SandboxDeleted",
+					"status":  "False",
+					"reason":  "DeletedExternally",
+					"message": "Sandbox was deleted outside of the control plane lifecycle. Session marked as failed.",
+				}})
+				s.updateSessionPhaseWithConditions(ctx, sdk, session, PhaseFailed, string(condJSON))
 			}
 			return
 		}
@@ -414,6 +424,14 @@ func (s *PodStatusSyncer) hasContainerCrashLoop(pod *unstructured.Unstructured) 
 }
 
 func (s *PodStatusSyncer) updateSessionPhase(ctx context.Context, sdk *sdkclient.Client, session *types.Session, newPhase string, pod *unstructured.Unstructured) {
+	var conditionsJSON string
+	if newPhase == PhaseFailed && pod != nil {
+		conditionsJSON = s.buildFailureConditions(pod)
+	}
+	s.updateSessionPhaseWithConditions(ctx, sdk, session, newPhase, conditionsJSON)
+}
+
+func (s *PodStatusSyncer) updateSessionPhaseWithConditions(ctx context.Context, sdk *sdkclient.Client, session *types.Session, newPhase string, conditionsJSON string) {
 	patch := map[string]interface{}{"phase": newPhase}
 
 	if newPhase == PhaseRunning {
@@ -429,10 +447,8 @@ func (s *PodStatusSyncer) updateSessionPhase(ctx context.Context, sdk *sdkclient
 		patch["completion_time"] = &now
 	}
 
-	if newPhase == PhaseFailed && pod != nil {
-		if conditionsJSON := s.buildFailureConditions(pod); conditionsJSON != "" {
-			patch["conditions"] = conditionsJSON
-		}
+	if conditionsJSON != "" {
+		patch["conditions"] = conditionsJSON
 	}
 
 	if _, err := sdk.Sessions().UpdateStatus(ctx, session.ID, patch); err != nil {
