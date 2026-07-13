@@ -47,7 +47,7 @@ type Session struct {
 	SdkSessionID             string     `json:"sdk_session_id,omitempty"`
 	SourceScheduledSessionID string     `json:"source_scheduled_session_id,omitempty"`
 	StartTime                *time.Time `json:"start_time,omitempty"`
-	StopOnRunFinished        bool       `json:"stop_on_run_finished,omitempty"`
+	StopOnRunFinished        *bool      `json:"stop_on_run_finished,omitempty"`
 	Timeout                  int        `json:"timeout,omitempty"`
 	WorkflowID               string     `json:"workflow_id,omitempty"`
 }
@@ -152,7 +152,7 @@ func (b *SessionBuilder) ResourceOverrides(v string) *SessionBuilder {
 }
 
 func (b *SessionBuilder) StopOnRunFinished(v bool) *SessionBuilder {
-	b.resource.StopOnRunFinished = v
+	b.resource.StopOnRunFinished = &v
 	return b
 }
 

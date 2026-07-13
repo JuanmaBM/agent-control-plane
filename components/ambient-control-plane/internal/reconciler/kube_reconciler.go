@@ -415,7 +415,10 @@ func (r *SimpleKubeReconciler) provisionSessionSandbox(ctx context.Context, sess
 	// TODO: add stop_on_run_finished to the gRPC Session proto to avoid this extra REST call.
 	restSession, restErr := sdk.Sessions().Get(ctx, session.ID)
 	if restErr != nil {
-		r.logger.Warn().Err(restErr).Str("session_id", session.ID).Msg("failed to fetch session via REST; stop_on_run_finished may be incorrect")
+		r.logger.Warn().Err(restErr).Str("session_id", session.ID).
+			Msg("failed to fetch stop_on_run_finished via REST; defaulting to true")
+		defaultTrue := true
+		session.StopOnRunFinished = &defaultTrue
 	} else {
 		session.StopOnRunFinished = restSession.StopOnRunFinished
 	}
@@ -3462,5 +3465,8 @@ func min(a, b int) int {
 }
 
 func sessionStopOnRunFinished(session types.Session) bool {
-	return session.StopOnRunFinished || session.SourceScheduledSessionID != ""
+	if session.StopOnRunFinished != nil {
+		return *session.StopOnRunFinished
+	}
+	return session.SourceScheduledSessionID != ""
 }
