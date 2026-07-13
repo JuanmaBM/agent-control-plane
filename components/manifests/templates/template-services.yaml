@@ -285,6 +285,8 @@ objects:
                     optional: true
               - name: CREDENTIAL_ENCRYPTION_ALLOW_PLAINTEXT
                 value: "false"
+              - name: JWK_CERT_URL
+                value: ${KEYCLOAK_REALM_URL}/protocol/openid-connect/certs
             command:
               - /usr/local/bin/ambient-api-server
               - serve
@@ -296,14 +298,11 @@ objects:
               - --enable-jwt=true
               - --enable-authz=true
               - --jwk-cert-file=/configs/authentication/jwks.json
-              - --jwk-cert-url=${KEYCLOAK_REALM_URL}/protocol/openid-connect/certs
               - --enable-https=false
               - --enable-grpc=true
-              - --grpc-enable-tls=false
               - --api-server-bindaddress=:8000
               - --metrics-server-bindaddress=:4433
               - --health-check-server-bindaddress=:4434
-              - --enable-health-check-https=false
               - --db-sslmode=${DB_SSLMODE}
               - --db-rootcert=/secrets/db/db.ca_cert
               - --db-max-open-connections=50
@@ -510,10 +509,6 @@ objects:
                 value: ${MLFLOW_CREDENTIAL_SECRET_NAME}
               - name: MLFLOW_CREDENTIAL_SECRET_NAMESPACE
                 value: ${NAMESPACE}
-            ports:
-              - name: token
-                containerPort: 8080
-                protocol: TCP
             volumeMounts:
               - name: vertex-credentials
                 mountPath: /app/vertex
@@ -563,6 +558,7 @@ objects:
     labels:
       app: ambient-ui
   spec:
+    serviceAccountName: ambient-ui
     replicas: 1
     selector:
       matchLabels:
@@ -609,6 +605,8 @@ objects:
                 value: ${SSO_REDIRECT_URI}
               - name: NEXT_PUBLIC_PREVIEW_ALLOWED_HOSTS
                 value: ${PREVIEW_ALLOWED_HOSTS}
+              - name: CONTROL_PLANE_URL
+                value: http://ambient-control-plane:8080
             ports:
               - name: http
                 containerPort: 3000
