@@ -46,6 +46,7 @@ type Session struct {
 	LastActivityAt        *time.Time `json:"last_activity_at"`
 	SandboxLogsSnapshot   *string    `json:"sandbox_logs_snapshot"`
 	SandboxPolicySnapshot *string    `json:"sandbox_policy_snapshot"`
+	StopOnRunFinished     *bool      `json:"stop_on_run_finished"`
 }
 
 type SessionList []*Session
@@ -75,6 +76,10 @@ func (d *Session) BeforeCreate(tx *gorm.DB) error {
 		defaultTokens := int32(4000)
 		d.LlmMaxTokens = &defaultTokens
 	}
+	if d.StopOnRunFinished == nil {
+		defaultStop := true
+		d.StopOnRunFinished = &defaultStop
+	}
 
 	return nil
 }
@@ -96,6 +101,7 @@ type SessionPatchRequest struct {
 	EnvironmentVariables *string  `json:"environment_variables,omitempty"`
 	SessionLabels        *string  `json:"labels,omitempty"`
 	SessionAnnotations   *string  `json:"annotations,omitempty"`
+	StopOnRunFinished    *bool    `json:"stop_on_run_finished,omitempty"`
 }
 
 type SessionStatusPatchRequest struct {

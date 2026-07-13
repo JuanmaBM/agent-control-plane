@@ -20,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Checkbox } from '@/components/ui/checkbox'
 import { useCreateSession } from '@/queries/use-sessions'
 import { useAgents } from '@/queries/use-agents'
 import type { DomainSessionCreateRequest } from '@/domain/types'
@@ -45,6 +46,7 @@ export function CreateSessionSheet({
   const [temperature, setTemperature] = useState('')
   const [maxTokens, setMaxTokens] = useState('')
   const [timeout, setTimeout] = useState('')
+  const [stopOnRunFinished, setStopOnRunFinished] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const agents = agentsData?.items ?? []
@@ -58,6 +60,7 @@ export function CreateSessionSheet({
     setTemperature('')
     setMaxTokens('')
     setTimeout('')
+    setStopOnRunFinished(true)
     setError(null)
   }
 
@@ -82,6 +85,7 @@ export function CreateSessionSheet({
     }
     if (prompt.trim()) request.prompt = prompt.trim()
     if (model) request.model = model
+    request.stopOnRunFinished = stopOnRunFinished
 
     if (showAdvanced) {
       const tempVal = parseFloat(temperature)
@@ -178,6 +182,25 @@ export function CreateSessionSheet({
             <p className="text-xs text-muted-foreground">
               Overrides the agent&apos;s configured default model
             </p>
+          </div>
+
+          <div className="flex items-start space-x-2">
+            <Checkbox
+              id="session-stop-on-run-finished"
+              checked={stopOnRunFinished}
+              onCheckedChange={(checked) => setStopOnRunFinished(checked === true)}
+            />
+            <div className="grid gap-0.5 leading-none">
+              <label
+                htmlFor="session-stop-on-run-finished"
+                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+              >
+                Stop session when agent is finished
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Unchecking keeps the sandbox alive after the run (debug mode)
+              </p>
+            </div>
           </div>
 
           <button

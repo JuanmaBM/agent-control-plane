@@ -47,6 +47,7 @@ type Session struct {
 	SdkSessionID             string     `json:"sdk_session_id,omitempty"`
 	SourceScheduledSessionID string     `json:"source_scheduled_session_id,omitempty"`
 	StartTime                *time.Time `json:"start_time,omitempty"`
+	StopOnRunFinished        bool       `json:"stop_on_run_finished,omitempty"`
 	Timeout                  int        `json:"timeout,omitempty"`
 	WorkflowID               string     `json:"workflow_id,omitempty"`
 }
@@ -150,6 +151,11 @@ func (b *SessionBuilder) ResourceOverrides(v string) *SessionBuilder {
 	return b
 }
 
+func (b *SessionBuilder) StopOnRunFinished(v bool) *SessionBuilder {
+	b.resource.StopOnRunFinished = v
+	return b
+}
+
 func (b *SessionBuilder) Timeout(v int) *SessionBuilder {
 	b.resource.Timeout = v
 	return b
@@ -245,6 +251,11 @@ func (b *SessionPatchBuilder) Repos(v string) *SessionPatchBuilder {
 
 func (b *SessionPatchBuilder) ResourceOverrides(v string) *SessionPatchBuilder {
 	b.patch["resource_overrides"] = v
+	return b
+}
+
+func (b *SessionPatchBuilder) StopOnRunFinished(v bool) *SessionPatchBuilder {
+	b.patch["stop_on_run_finished"] = v
 	return b
 }
 

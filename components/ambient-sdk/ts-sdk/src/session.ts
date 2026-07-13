@@ -39,6 +39,7 @@ export type Session = ObjectReference & {
   sdk_session_id: string;
   source_scheduled_session_id: string;
   start_time: string;
+  stop_on_run_finished: boolean;
   timeout: number;
   workflow_id: string;
 };
@@ -64,6 +65,7 @@ export type SessionCreateRequest = {
   repo_url?: string;
   repos?: string;
   resource_overrides?: string;
+  stop_on_run_finished?: boolean;
   timeout?: number;
   workflow_id?: string;
 };
@@ -83,6 +85,7 @@ export type SessionPatchRequest = {
   repo_url?: string;
   repos?: string;
   resource_overrides?: string;
+  stop_on_run_finished?: boolean;
   timeout?: number;
   workflow_id?: string;
 };
@@ -186,6 +189,11 @@ export class SessionBuilder {
     return this;
   }
 
+  stopOnRunFinished(value: boolean): this {
+    this.data['stop_on_run_finished'] = value;
+    return this;
+  }
+
   timeout(value: number): this {
     this.data['timeout'] = value;
     return this;
@@ -275,6 +283,11 @@ export class SessionPatchBuilder {
 
   resourceOverrides(value: string): this {
     this.data['resource_overrides'] = value;
+    return this;
+  }
+
+  stopOnRunFinished(value: boolean): this {
+    this.data['stop_on_run_finished'] = value;
     return this;
   }
 

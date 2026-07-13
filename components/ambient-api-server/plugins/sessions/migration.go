@@ -243,6 +243,27 @@ func sessionEventsMigration() *gormigrate.Migration {
 	}
 }
 
+func stopOnRunFinishedMigration() *gormigrate.Migration {
+	return &gormigrate.Migration{
+		ID: "202607090001",
+		Migrate: func(tx *gorm.DB) error {
+			stmts := []string{
+				`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stop_on_run_finished BOOLEAN`,
+				`UPDATE sessions SET stop_on_run_finished = true WHERE stop_on_run_finished IS NULL`,
+			}
+			for _, s := range stmts {
+				if err := tx.Exec(s).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.Exec(`ALTER TABLE sessions DROP COLUMN IF EXISTS stop_on_run_finished`).Error
+		},
+	}
+}
+
 func schemaExpansionMigration() *gormigrate.Migration {
 	migrateStatements := []string{
 		`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS repos TEXT`,

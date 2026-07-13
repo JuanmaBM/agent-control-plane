@@ -502,6 +502,9 @@ components:
               type: string
               readOnly: true
               description: JSON sandbox policy response; last snapshot before sandbox stop.
+            stop_on_run_finished:
+              type: boolean
+              description: When true (default), the sandbox is automatically deleted when the agent's task completes. Set to false to keep the sandbox running after the run ends (useful for debugging).
     # NEW SCHEMA START
     SessionList:
     # NEW SCHEMA END
@@ -551,6 +554,9 @@ components:
           type: string
         annotations:
           type: string
+        stop_on_run_finished:
+          type: boolean
+          description: When true (default), the sandbox is automatically deleted when the agent's task completes.
     SessionStatusPatchRequest:
       type: object
       properties:

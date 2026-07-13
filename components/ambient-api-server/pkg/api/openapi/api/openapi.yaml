@@ -5591,6 +5591,11 @@ components:
               stop.
             readOnly: true
             type: string
+          stop_on_run_finished:
+            description: "When true (default), the sandbox is automatically deleted\
+              \ when the agent's task completes. Set to false to keep the sandbox\
+              \ running after the run ends (useful for debugging)."
+            type: boolean
         required:
         - name
         type: object
@@ -5608,6 +5613,7 @@ components:
         timeout: 5
         environment_variables: environment_variables
         kube_cr_uid: kube_cr_uid
+        stop_on_run_finished: true
         sdk_restart_count: 7
         updated_at: 2000-01-23T04:56:07.000+00:00
         project_id: project_id
@@ -5663,6 +5669,7 @@ components:
           timeout: 5
           environment_variables: environment_variables
           kube_cr_uid: kube_cr_uid
+          stop_on_run_finished: true
           sdk_restart_count: 7
           updated_at: 2000-01-23T04:56:07.000+00:00
           project_id: project_id
@@ -5703,6 +5710,7 @@ components:
           timeout: 5
           environment_variables: environment_variables
           kube_cr_uid: kube_cr_uid
+          stop_on_run_finished: true
           sdk_restart_count: 7
           updated_at: 2000-01-23T04:56:07.000+00:00
           project_id: project_id
@@ -5743,6 +5751,7 @@ components:
         timeout: 0
         labels: labels
         environment_variables: environment_variables
+        stop_on_run_finished: true
         bot_account_name: bot_account_name
         repos: repos
         name: name
@@ -5782,6 +5791,10 @@ components:
           type: string
         annotations:
           type: string
+        stop_on_run_finished:
+          description: "When true (default), the sandbox is automatically deleted\
+            \ when the agent's task completes."
+          type: boolean
       type: object
     SessionStatusPatchRequest:
       example:
@@ -6695,6 +6708,7 @@ components:
           timeout: 5
           environment_variables: environment_variables
           kube_cr_uid: kube_cr_uid
+          stop_on_run_finished: true
           sdk_restart_count: 7
           updated_at: 2000-01-23T04:56:07.000+00:00
           project_id: project_id
@@ -6735,6 +6749,7 @@ components:
           timeout: 5
           environment_variables: environment_variables
           kube_cr_uid: kube_cr_uid
+          stop_on_run_finished: true
           sdk_restart_count: 7
           updated_at: 2000-01-23T04:56:07.000+00:00
           project_id: project_id
@@ -6786,6 +6801,7 @@ components:
           timeout: 5
           environment_variables: environment_variables
           kube_cr_uid: kube_cr_uid
+          stop_on_run_finished: true
           sdk_restart_count: 7
           updated_at: 2000-01-23T04:56:07.000+00:00
           project_id: project_id

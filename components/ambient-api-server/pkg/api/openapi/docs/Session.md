@@ -44,6 +44,7 @@ Name | Type | Description | Notes
 **LastActivityAt** | Pointer to **time.Time** | Timestamp of the last agent activity (message push) for staleness detection. | [optional] [readonly] 
 **SandboxLogsSnapshot** | Pointer to **string** | JSON array of sandbox log entries; last snapshot before sandbox stop. | [optional] [readonly] 
 **SandboxPolicySnapshot** | Pointer to **string** | JSON sandbox policy response; last snapshot before sandbox stop. | [optional] [readonly] 
+**StopOnRunFinished** | Pointer to **bool** | When true (default), the sandbox is automatically deleted when the agent&#39;s task completes. Set to false to keep the sandbox running after the run ends (useful for debugging). | [optional] 
 
 ## Methods
 
@@ -1058,6 +1059,31 @@ SetSandboxPolicySnapshot sets SandboxPolicySnapshot field to given value.
 `func (o *Session) HasSandboxPolicySnapshot() bool`
 
 HasSandboxPolicySnapshot returns a boolean if a field has been set.
+
+### GetStopOnRunFinished
+
+`func (o *Session) GetStopOnRunFinished() bool`
+
+GetStopOnRunFinished returns the StopOnRunFinished field if non-nil, zero value otherwise.
+
+### GetStopOnRunFinishedOk
+
+`func (o *Session) GetStopOnRunFinishedOk() (*bool, bool)`
+
+GetStopOnRunFinishedOk returns a tuple with the StopOnRunFinished field if it's non-nil, zero value otherwise
+and a boolean to check if the value has been set.
+
+### SetStopOnRunFinished
+
+`func (o *Session) SetStopOnRunFinished(v bool)`
+
+SetStopOnRunFinished sets StopOnRunFinished field to given value.
+
+### HasStopOnRunFinished
+
+`func (o *Session) HasStopOnRunFinished() bool`
+
+HasStopOnRunFinished returns a boolean if a field has been set.
 
 
 [[Back to Model list]](../README.md#documentation-for-models) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to README]](../README.md)

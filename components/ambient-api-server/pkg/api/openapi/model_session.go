@@ -71,6 +71,8 @@ type Session struct {
 	SandboxLogsSnapshot *string `json:"sandbox_logs_snapshot,omitempty"`
 	// JSON sandbox policy response; last snapshot before sandbox stop.
 	SandboxPolicySnapshot *string `json:"sandbox_policy_snapshot,omitempty"`
+	// When true (default), the sandbox is automatically deleted when the agent's task completes. Set to false to keep the sandbox running after the run ends (useful for debugging).
+	StopOnRunFinished *bool `json:"stop_on_run_finished,omitempty"`
 }
 
 type _Session Session
@@ -1365,6 +1367,38 @@ func (o *Session) SetSandboxPolicySnapshot(v string) {
 	o.SandboxPolicySnapshot = &v
 }
 
+// GetStopOnRunFinished returns the StopOnRunFinished field value if set, zero value otherwise.
+func (o *Session) GetStopOnRunFinished() bool {
+	if o == nil || IsNil(o.StopOnRunFinished) {
+		var ret bool
+		return ret
+	}
+	return *o.StopOnRunFinished
+}
+
+// GetStopOnRunFinishedOk returns a tuple with the StopOnRunFinished field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *Session) GetStopOnRunFinishedOk() (*bool, bool) {
+	if o == nil || IsNil(o.StopOnRunFinished) {
+		return nil, false
+	}
+	return o.StopOnRunFinished, true
+}
+
+// HasStopOnRunFinished returns a boolean if a field has been set.
+func (o *Session) HasStopOnRunFinished() bool {
+	if o != nil && !IsNil(o.StopOnRunFinished) {
+		return true
+	}
+
+	return false
+}
+
+// SetStopOnRunFinished gets a reference to the given bool and assigns it to the StopOnRunFinished field.
+func (o *Session) SetStopOnRunFinished(v bool) {
+	o.StopOnRunFinished = &v
+}
+
 func (o Session) MarshalJSON() ([]byte, error) {
 	toSerialize, err := o.ToMap()
 	if err != nil {
@@ -1492,6 +1526,9 @@ func (o Session) ToMap() (map[string]interface{}, error) {
 	}
 	if !IsNil(o.SandboxPolicySnapshot) {
 		toSerialize["sandbox_policy_snapshot"] = o.SandboxPolicySnapshot
+	}
+	if !IsNil(o.StopOnRunFinished) {
+		toSerialize["stop_on_run_finished"] = o.StopOnRunFinished
 	}
 	return toSerialize, nil
 }
