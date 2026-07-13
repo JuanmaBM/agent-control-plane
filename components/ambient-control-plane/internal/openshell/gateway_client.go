@@ -287,51 +287,58 @@ func (g *GatewayClient) RotateProviderCredential(ctx context.Context, namespace 
 
 const maxLogChunkSize = 512
 
-func (g *GatewayClient) ExecSandboxStreaming(ctx context.Context, namespace string, req *pb.ExecSandboxRequest) error {
+func (g *GatewayClient) ExecSandboxStreaming(ctx context.Context, namespace string, req *pb.ExecSandboxRequest) (<-chan error, error) {
 	ctx = g.authContext(ctx)
 	client, err := g.clientForNamespace(ctx, namespace)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	stream, err := client.ExecSandbox(ctx, req)
 	if err != nil {
 		if g.shouldEvict(err) {
 			g.evictConn(namespace)
 		}
-		return err
+		return nil, err
 	}
 
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			g.logger.Debug().Str("sandbox_id", req.SandboxId).Msg("exec stream ended")
-			return nil
-		}
-		if err != nil {
-			g.logger.Warn().Err(err).Str("sandbox_id", req.SandboxId).Msg("exec stream error")
-			return err
-		}
-		switch p := event.Payload.(type) {
-		case *pb.ExecSandboxEvent_Stdout:
-			chunk := p.Stdout.Data
-			if len(chunk) > maxLogChunkSize {
-				chunk = chunk[:maxLogChunkSize]
+	done := make(chan error, 1)
+	go func() {
+		defer close(done)
+		for {
+			event, err := stream.Recv()
+			if err == io.EOF {
+				g.logger.Debug().Str("sandbox_id", req.SandboxId).Msg("exec stream ended")
+				return
 			}
-			g.logger.Debug().Str("sandbox_id", req.SandboxId).Str("stdout", string(chunk)).Msg("exec stdout")
-		case *pb.ExecSandboxEvent_Stderr:
-			chunk := p.Stderr.Data
-			if len(chunk) > maxLogChunkSize {
-				chunk = chunk[:maxLogChunkSize]
+			if err != nil {
+				g.logger.Warn().Err(err).Str("sandbox_id", req.SandboxId).Msg("exec stream error")
+				done <- err
+				return
 			}
-			g.logger.Debug().Str("sandbox_id", req.SandboxId).Str("stderr", string(chunk)).Msg("exec stderr")
-		case *pb.ExecSandboxEvent_Exit:
-			g.logger.Info().Str("sandbox_id", req.SandboxId).Int32("exit_code", p.Exit.ExitCode).Msg("exec process exited")
-			if p.Exit.ExitCode != 0 {
-				return fmt.Errorf("exec process exited with code %d", p.Exit.ExitCode)
+			switch p := event.Payload.(type) {
+			case *pb.ExecSandboxEvent_Stdout:
+				chunk := p.Stdout.Data
+				if len(chunk) > maxLogChunkSize {
+					chunk = chunk[:maxLogChunkSize]
+				}
+				g.logger.Debug().Str("sandbox_id", req.SandboxId).Str("stdout", string(chunk)).Msg("exec stdout")
+			case *pb.ExecSandboxEvent_Stderr:
+				chunk := p.Stderr.Data
+				if len(chunk) > maxLogChunkSize {
+					chunk = chunk[:maxLogChunkSize]
+				}
+				g.logger.Debug().Str("sandbox_id", req.SandboxId).Str("stderr", string(chunk)).Msg("exec stderr")
+			case *pb.ExecSandboxEvent_Exit:
+				g.logger.Info().Str("sandbox_id", req.SandboxId).Int32("exit_code", p.Exit.ExitCode).Msg("exec process exited")
+				if p.Exit.ExitCode != 0 {
+					done <- fmt.Errorf("exec process exited with code %d", p.Exit.ExitCode)
+				}
+				return
 			}
-			return nil
 		}
-	}
+	}()
+
+	return done, nil
 }
 
 func (g *GatewayClient) UpdateConfig(ctx context.Context, namespace string, req *pb.UpdateConfigRequest) (*pb.UpdateConfigResponse, error) {

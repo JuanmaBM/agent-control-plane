@@ -93,8 +93,10 @@ func (m *mockGateway) ExecSandbox(ctx context.Context, namespace string, req *pb
 	return &openshell.ExecResult{}, nil
 }
 
-func (m *mockGateway) ExecSandboxStreaming(_ context.Context, _ string, _ *pb.ExecSandboxRequest) error {
-	return nil
+func (m *mockGateway) ExecSandboxStreaming(_ context.Context, _ string, _ *pb.ExecSandboxRequest) (<-chan error, error) {
+	ch := make(chan error, 1)
+	close(ch)
+	return ch, nil
 }
 
 func (m *mockGateway) UpdateConfig(_ context.Context, _ string, _ *pb.UpdateConfigRequest) (*pb.UpdateConfigResponse, error) {

@@ -18,7 +18,7 @@ type gatewayClient interface {
 	ConfigureProviderRefresh(ctx context.Context, namespace string, req *pb.ConfigureProviderRefreshRequest) (*pb.ConfigureProviderRefreshResponse, error)
 	RotateProviderCredential(ctx context.Context, namespace string, req *pb.RotateProviderCredentialRequest) (*pb.RotateProviderCredentialResponse, error)
 	ExecSandbox(ctx context.Context, namespace string, req *pb.ExecSandboxRequest) (*openshell.ExecResult, error)
-	ExecSandboxStreaming(ctx context.Context, namespace string, req *pb.ExecSandboxRequest) error
+	ExecSandboxStreaming(ctx context.Context, namespace string, req *pb.ExecSandboxRequest) (<-chan error, error)
 	UpdateConfig(ctx context.Context, namespace string, req *pb.UpdateConfigRequest) (*pb.UpdateConfigResponse, error)
 	UploadPayloads(ctx context.Context, namespace string, sandboxID string, payloads []openshell.Payload) error
 	FetchSandboxLogs(ctx context.Context, namespace, sandboxID string, tailLines uint32) ([]map[string]interface{}, error)

@@ -412,6 +412,14 @@ func (r *SimpleKubeReconciler) provisionSessionSandbox(ctx context.Context, sess
 		return fmt.Errorf("session %s: project %s not found in API server; refusing to provision: %w", session.ID, session.ProjectID, err)
 	}
 
+	// TODO: add stop_on_run_finished to the gRPC Session proto to avoid this extra REST call.
+	restSession, restErr := sdk.Sessions().Get(ctx, session.ID)
+	if restErr != nil {
+		r.logger.Warn().Err(restErr).Str("session_id", session.ID).Msg("failed to fetch session via REST; stop_on_run_finished may be incorrect")
+	} else {
+		session.StopOnRunFinished = restSession.StopOnRunFinished
+	}
+
 	var agent *types.Agent
 	if session.AgentID != "" {
 		agent, err = sdk.Agents().Get(ctx, session.AgentID)
@@ -427,6 +435,7 @@ func (r *SimpleKubeReconciler) provisionSessionSandbox(ctx context.Context, sess
 		Str("session_id", session.ID).
 		Str("namespace", namespace).
 		Str("sandbox", sbxName).
+		Bool("stop_on_run_finished", sessionStopOnRunFinished(session)).
 		Msg("provisioning session via gateway")
 
 	if _, err := r.kube.GetNamespace(ctx, namespace); err != nil {
@@ -476,7 +485,7 @@ func (r *SimpleKubeReconciler) provisionSessionSandbox(ctx context.Context, sess
 			r.logger.Info().Str("session_id", session.ID).Str("sandbox", sbxName).Msg("execAfterReady already running for session; skipping duplicate")
 			return nil
 		}
-		go r.execAfterReady(namespace, sbxName, session.ID, entrypoint, sdk, execEnv, payloads)
+		go r.execAfterReady(namespace, sbxName, session.ID, entrypoint, sdk, execEnv, payloads, sessionStopOnRunFinished(session))
 		r.updateSessionPhaseWithNamespace(ctx, session, PhaseCreating, namespace)
 		return nil
 	}
@@ -551,7 +560,7 @@ func (r *SimpleKubeReconciler) provisionSessionSandbox(ctx context.Context, sess
 		r.logger.Info().Str("session_id", session.ID).Str("sandbox", sbxName).Msg("execAfterReady already running for session; skipping duplicate")
 		return nil
 	}
-	go r.execAfterReady(namespace, sbxName, session.ID, entrypoint, sdk, execEnv, payloads)
+	go r.execAfterReady(namespace, sbxName, session.ID, entrypoint, sdk, execEnv, payloads, sessionStopOnRunFinished(session))
 
 	r.updateSessionPhaseWithNamespace(ctx, session, PhaseCreating, namespace)
 	return nil
@@ -744,7 +753,7 @@ func (r *SimpleKubeReconciler) sandboxReadinessTimeout() time.Duration {
 	return 600 * time.Second
 }
 
-func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID string, entrypoint []string, sdk *sdkclient.Client, execEnv map[string]string, payloads []types.Payload) {
+func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID string, entrypoint []string, sdk *sdkclient.Client, execEnv map[string]string, payloads []types.Payload, stopOnRunFinished bool) {
 	defer r.releaseExec(sessionID)
 	timeout := r.sandboxReadinessTimeout()
 	pollCtx, pollCancel := context.WithTimeout(context.Background(), timeout)
@@ -947,31 +956,7 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 						uploadCtx, cancel = context.WithTimeout(execCtx, 5*time.Minute)
 						defer cancel()
 					}
-					const maxUploadRetries = 4
-					var uploadErr error
-					for attempt := range maxUploadRetries + 1 {
-						uploadErr = r.gateway.UploadPayloads(uploadCtx, namespace, sandboxID, sshPayloads)
-						if uploadErr == nil {
-							break
-						}
-						retryable := isUploadRetryable(uploadErr)
-						if !retryable || attempt == maxUploadRetries {
-							break
-						}
-						backoff := time.Duration(1<<uint(attempt)) * time.Second
-						r.logger.Warn().Err(uploadErr).Str("sandbox", sbxName).Int("attempt", attempt+1).Dur("backoff", backoff).Msg("payload upload failed with Unavailable, retrying")
-						timer := time.NewTimer(backoff)
-						select {
-						case <-uploadCtx.Done():
-							timer.Stop()
-							uploadErr = fmt.Errorf("upload context cancelled during retry: %w", uploadCtx.Err())
-						case <-timer.C:
-						}
-						if uploadCtx.Err() != nil {
-							break
-						}
-					}
-					if uploadErr != nil {
+					if uploadErr := r.gateway.UploadPayloads(uploadCtx, namespace, sandboxID, sshPayloads); uploadErr != nil {
 						r.logger.Error().Err(uploadErr).Str("sandbox", sbxName).Msg("failed to upload payloads via SSH")
 						failSession(fmt.Sprintf("payload upload failed: %v", uploadErr))
 						return
@@ -1685,6 +1670,9 @@ func (r *SimpleKubeReconciler) buildSandboxEnv(ctx context.Context, session type
 	}
 	if session.RepoURL != "" {
 		env["REPOS_JSON"] = fmt.Sprintf(`[{"url":%q}]`, session.RepoURL)
+	}
+	if sessionStopOnRunFinished(session) {
+		env["STOP_ON_RUN_FINISHED"] = "true"
 	}
 	if r.cfg.HTTPProxy != "" {
 		env["HTTP_PROXY"] = r.cfg.HTTPProxy
@@ -2799,7 +2787,7 @@ func (r *SimpleKubeReconciler) buildEnv(ctx context.Context, session types.Sessi
 	}
 	env = r.appendMLflowRuntimeEnv(env)
 
-	if session.SourceScheduledSessionID != "" {
+	if session.SourceScheduledSessionID != "" || sessionStopOnRunFinished(session) {
 		env = append(env, envVar("STOP_ON_RUN_FINISHED", "true"))
 	}
 
@@ -3471,4 +3459,8 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func sessionStopOnRunFinished(session types.Session) bool {
+	return session.StopOnRunFinished || session.SourceScheduledSessionID != ""
 }
