@@ -14,6 +14,7 @@ import (
 	"github.com/ambient-code/platform/components/ambient-cli/cmd/acpctl/credential"
 	"github.com/ambient-code/platform/components/ambient-cli/cmd/acpctl/delete"
 	"github.com/ambient-code/platform/components/ambient-cli/cmd/acpctl/describe"
+	"github.com/ambient-code/platform/components/ambient-cli/cmd/acpctl/gateway"
 	"github.com/ambient-code/platform/components/ambient-cli/cmd/acpctl/get"
 	"github.com/ambient-code/platform/components/ambient-cli/cmd/acpctl/inbox"
 	"github.com/ambient-code/platform/components/ambient-cli/cmd/acpctl/login"
@@ -72,6 +73,7 @@ func init() {
 	root.AddCommand(provider.Cmd)
 	root.AddCommand(policy.Cmd)
 	root.AddCommand(inbox.Cmd)
+	root.AddCommand(gateway.Cmd)
 	root.AddCommand(get.Cmd)
 	root.AddCommand(create.Cmd)
 	root.AddCommand(delete.Cmd)
