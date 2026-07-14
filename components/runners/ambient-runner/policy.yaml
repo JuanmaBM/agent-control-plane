@@ -21,6 +21,7 @@ filesystem_policy:
     - /sandbox
     - /tmp
     - /dev/null
+    - /sandbox/.runner/logs
 
 landlock:
   compatibility: best_effort
