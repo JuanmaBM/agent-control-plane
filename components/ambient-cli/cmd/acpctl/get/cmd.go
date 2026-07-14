@@ -157,6 +157,9 @@ func run(cmd *cobra.Command, cmdArgs []string) error {
 	case "gateways":
 		return getGateways(ctx, client, printer, name)
 	default:
+		if args.setup {
+			return fmt.Errorf("--setup is only supported for the 'gateway' resource type")
+		}
 		return fmt.Errorf("unknown resource type: %s\nValid types: sessions, projects, project-agents, project-settings, users, agents, providers, policies, roles, role-bindings, credentials, gateways", cmdArgs[0])
 	}
 }
@@ -957,22 +960,28 @@ func getGateways(ctx context.Context, client *sdkclient.Client, printer *output.
 }
 
 func findGateway(ctx context.Context, client *sdkclient.Client, nameOrID string) (*sdktypes.Gateway, error) {
-	// Try by ID first
 	gw, err := client.Gateways().Get(ctx, nameOrID)
 	if err == nil {
 		return gw, nil
 	}
 
-	// Fall back to name search
-	opts := sdktypes.NewListOptions().Size(100).Build()
-	list, err2 := client.Gateways().List(ctx, opts)
-	if err2 != nil {
-		return nil, fmt.Errorf("list gateways: %w", err2)
-	}
-	for i := range list.Items {
-		if list.Items[i].Name == nameOrID {
-			return &list.Items[i], nil
+	page := 1
+	pageSize := 100
+	for {
+		opts := sdktypes.NewListOptions().Page(page).Size(pageSize).Build()
+		list, err2 := client.Gateways().List(ctx, opts)
+		if err2 != nil {
+			return nil, fmt.Errorf("list gateways: %w", err2)
 		}
+		for i := range list.Items {
+			if list.Items[i].Name == nameOrID {
+				return &list.Items[i], nil
+			}
+		}
+		if len(list.Items) < pageSize {
+			break
+		}
+		page++
 	}
 	return nil, fmt.Errorf("gateway %q not found", nameOrID)
 }
@@ -1037,11 +1046,11 @@ func setupOpenshellGateway(w io.Writer, gw *sdktypes.Gateway) error {
 	fmt.Fprintf(w, "Starting port-forward to openshell-gateway in %s...\n", namespace)
 	pfCmd := exec.Command("kubectl", "port-forward", "-n", namespace,
 		"statefulset/openshell-gateway", ":8080")
+	pfCmd.Stderr = os.Stderr
 	pfOut, err := pfCmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("create port-forward pipe: %w", err)
 	}
-	pfCmd.Stderr = pfCmd.Stdout
 	if err := pfCmd.Start(); err != nil {
 		return fmt.Errorf("start port-forward: %w", err)
 	}
@@ -1053,15 +1062,18 @@ func setupOpenshellGateway(w io.Writer, gw *sdktypes.Gateway) error {
 	// Wait for port-forward to print the assigned port
 	port := ""
 	scanner := bufio.NewScanner(pfOut)
-	deadline := time.After(15 * time.Second)
 	portCh := make(chan string, 1)
+	pfCtx, pfCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer pfCancel()
 	go func() {
+		defer pfCancel()
 		for scanner.Scan() {
 			line := scanner.Text()
 			if idx := strings.Index(line, "Forwarding from 127.0.0.1:"); idx >= 0 {
 				rest := line[idx+len("Forwarding from 127.0.0.1:"):]
 				if end := strings.Index(rest, " "); end > 0 {
 					portCh <- rest[:end]
+					return
 				}
 			}
 		}
@@ -1069,7 +1081,7 @@ func setupOpenshellGateway(w io.Writer, gw *sdktypes.Gateway) error {
 
 	select {
 	case port = <-portCh:
-	case <-deadline:
+	case <-pfCtx.Done():
 		return fmt.Errorf("timeout waiting for port-forward to start")
 	}
 
