@@ -977,6 +977,7 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 			const maxExecRetries = 29
 			const execRetryDelay = 2 * time.Second
 
+			var execDone <-chan error
 			for attempt := 0; attempt <= maxExecRetries; attempt++ {
 				if attempt > 0 {
 					r.logger.Info().
@@ -988,7 +989,7 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 					time.Sleep(execRetryDelay)
 				}
 
-				err = r.gateway.ExecSandboxStreaming(execCtx, namespace, &openshellpb.ExecSandboxRequest{
+				execDone, err = r.gateway.ExecSandboxStreaming(execCtx, namespace, &openshellpb.ExecSandboxRequest{
 					SandboxId:   sandboxID,
 					Command:     entrypoint,
 					Environment: execEnv,
@@ -1015,13 +1016,35 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 				}
 			}
 
-			// FIXME(#223): Mark session PhaseCompleted and set completion_time here once
-			// session lifecycle is ironed out. Currently left Running so the sandbox
-			// isn't orphaned (Completed triggers deprovision).
-			r.logger.Info().
-				Str("sandbox", sbxName).
-				Str("session_id", sessionID).
-				Msg("runner exec stream finished")
+			// Resolves FIXME(#223): session lifecycle is now handled via stop_on_run_finished.
+			if stopOnRunFinished {
+				r.logger.Info().
+					Str("sandbox", sbxName).
+					Str("session_id", sessionID).
+					Msg("waiting for exec stream to finish (stop_on_run_finished=true)")
+				<-execDone
+				r.logger.Info().
+					Str("sandbox", sbxName).
+					Str("session_id", sessionID).
+					Msg("exec stream finished, marking session completed")
+				completeCtx, completeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				now := time.Now()
+				_, err := sdk.Sessions().UpdateStatus(completeCtx, sessionID, map[string]interface{}{
+					"phase":           PhaseCompleted,
+					"completion_time": &now,
+				})
+				completeCancel()
+				if err != nil {
+					r.logger.Warn().Err(err).Str("session_id", sessionID).Msg("failed to mark session completed after exec finished")
+				} else {
+					r.logger.Info().Str("session_id", sessionID).Msg("session marked completed after exec finished")
+				}
+			} else {
+				r.logger.Info().
+					Str("sandbox", sbxName).
+					Str("session_id", sessionID).
+					Msg("exec stream started (stop_on_run_finished=false, sandbox will stay alive)")
+			}
 			return
 		}
 	}
