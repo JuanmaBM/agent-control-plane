@@ -34,6 +34,7 @@ Valid resource types:
   role-binding      (aliases: rolebinding, rb)
   credential        (aliases: cred)
   application       (aliases: app, apps)
+  gateway           (aliases: gateways, gw)
 
 Use --all / -A to delete all resources of the given type.
 For sessions, active sessions are stopped before deletion.`,
@@ -146,8 +147,15 @@ func run(cmd *cobra.Command, cmdArgs []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "application/%s deleted\n", name)
 		return nil
 
+	case "gateway", "gateways", "gw":
+		if err := client.Gateways().Delete(ctx, name); err != nil {
+			return fmt.Errorf("delete gateway %q: %w", name, err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "gateway/%s deleted\n", name)
+		return nil
+
 	default:
-		return fmt.Errorf("unknown or non-deletable resource type: %s\nDeletable types: project, project-settings, session, agent, role, role-binding, credential, application", cmdArgs[0])
+		return fmt.Errorf("unknown or non-deletable resource type: %s\nDeletable types: project, project-settings, session, agent, role, role-binding, credential, application, gateway", cmdArgs[0])
 	}
 }
 
