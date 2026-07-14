@@ -58,7 +58,7 @@ var root = &cobra.Command{
 
 func init() {
 	root.PersistentFlags().BoolVar(&insecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS certificate verification (insecure)")
-	root.PersistentFlags().StringVar(&apiURLOverride, "api-url", "", "Override the API server URL for this invocation")
+	root.PersistentFlags().StringVarP(&apiURLOverride, "api-url", "U", "", "Override the API server URL for this invocation")
 	root.AddCommand(login.Cmd)
 	root.AddCommand(logout.Cmd)
 	root.AddCommand(version.Cmd)
