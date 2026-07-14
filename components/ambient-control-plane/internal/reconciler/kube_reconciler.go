@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ambient-code/platform/components/ambient-control-plane/internal/informer"
@@ -132,6 +133,15 @@ type SimpleKubeReconciler struct {
 	gateway     gatewayClient
 	cfg         KubeReconcilerConfig
 	logger      zerolog.Logger
+
+	execMu      sync.Mutex
+	activeExecs map[string]struct{}
+
+	provisionMu      sync.Mutex
+	activeProvisions map[string]struct{}
+
+	deprovisionMu      sync.Mutex
+	activeDeprovisions map[string]struct{}
 }
 
 func (r *SimpleKubeReconciler) nsKube() *kubeclient.KubeClient {
@@ -143,14 +153,65 @@ func (r *SimpleKubeReconciler) nsKube() *kubeclient.KubeClient {
 
 func NewKubeReconciler(factory *SDKClientFactory, kube *kubeclient.KubeClient, projectKube *kubeclient.KubeClient, provisioner kubeclient.NamespaceProvisioner, gateway gatewayClient, cfg KubeReconcilerConfig, logger zerolog.Logger) *SimpleKubeReconciler {
 	return &SimpleKubeReconciler{
-		factory:     factory,
-		kube:        kube,
-		projectKube: projectKube,
-		provisioner: provisioner,
-		gateway:     gateway,
-		cfg:         cfg,
-		logger:      logger.With().Str("reconciler", "kube").Logger(),
+		factory:            factory,
+		kube:               kube,
+		projectKube:        projectKube,
+		provisioner:        provisioner,
+		gateway:            gateway,
+		cfg:                cfg,
+		logger:             logger.With().Str("reconciler", "kube").Logger(),
+		activeExecs:        make(map[string]struct{}),
+		activeProvisions:   make(map[string]struct{}),
+		activeDeprovisions: make(map[string]struct{}),
 	}
+}
+
+func (r *SimpleKubeReconciler) tryClaimExec(sessionID string) bool {
+	r.execMu.Lock()
+	defer r.execMu.Unlock()
+	if _, active := r.activeExecs[sessionID]; active {
+		return false
+	}
+	r.activeExecs[sessionID] = struct{}{}
+	return true
+}
+
+func (r *SimpleKubeReconciler) releaseExec(sessionID string) {
+	r.execMu.Lock()
+	defer r.execMu.Unlock()
+	delete(r.activeExecs, sessionID)
+}
+
+func (r *SimpleKubeReconciler) tryClaimProvision(sessionID string) bool {
+	r.provisionMu.Lock()
+	defer r.provisionMu.Unlock()
+	if _, active := r.activeProvisions[sessionID]; active {
+		return false
+	}
+	r.activeProvisions[sessionID] = struct{}{}
+	return true
+}
+
+func (r *SimpleKubeReconciler) releaseProvision(sessionID string) {
+	r.provisionMu.Lock()
+	defer r.provisionMu.Unlock()
+	delete(r.activeProvisions, sessionID)
+}
+
+func (r *SimpleKubeReconciler) tryClaimDeprovision(sessionID string) bool {
+	r.deprovisionMu.Lock()
+	defer r.deprovisionMu.Unlock()
+	if _, active := r.activeDeprovisions[sessionID]; active {
+		return false
+	}
+	r.activeDeprovisions[sessionID] = struct{}{}
+	return true
+}
+
+func (r *SimpleKubeReconciler) releaseDeprovision(sessionID string) {
+	r.deprovisionMu.Lock()
+	defer r.deprovisionMu.Unlock()
+	delete(r.activeDeprovisions, sessionID)
 }
 
 func (r *SimpleKubeReconciler) namespaceForSession(session types.Session) string {
@@ -201,27 +262,62 @@ func (r *SimpleKubeReconciler) Reconcile(ctx context.Context, event informer.Res
 	switch event.Type {
 	case informer.EventAdded:
 		if session.Phase == PhasePending || session.Phase == "" {
-			return r.provisionSession(ctx, session)
+			if !r.tryClaimProvision(session.ID) {
+				r.logger.Info().Str("session_id", session.ID).Msg("provisioning already in progress; skipping")
+				return nil
+			}
+			go r.provisionAsync(session)
+			return nil
 		}
 	case informer.EventModified:
 		switch session.Phase {
 		case PhasePending:
-			return r.provisionSession(ctx, session)
+			if !r.tryClaimProvision(session.ID) {
+				r.logger.Info().Str("session_id", session.ID).Msg("provisioning already in progress; skipping")
+				return nil
+			}
+			go r.provisionAsync(session)
+			return nil
 		case PhaseStopping:
-			return r.deprovisionSession(ctx, session, PhaseStopped)
+			go r.deprovisionAsync(session, PhaseStopped)
+			return nil
 		case PhaseFailed:
-			return r.deprovisionSession(ctx, session, session.Phase)
+			go r.deprovisionAsync(session, session.Phase)
+			return nil
 		case PhaseCompleted:
 			// FIXME(#223): Enable gateway sandbox cleanup once session lifecycle is ironed out.
 			// Merge back into the PhaseFailed case above to auto-delete the sandbox on completion.
 			if !r.cfg.OpenShellUseGateway {
-				return r.deprovisionSession(ctx, session, session.Phase)
+				go r.deprovisionAsync(session, session.Phase)
+				return nil
 			}
 		}
 	case informer.EventDeleted:
 		return r.cleanupSession(ctx, session)
 	}
 	return nil
+}
+
+func (r *SimpleKubeReconciler) provisionAsync(session types.Session) {
+	defer r.releaseProvision(session.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if err := r.provisionSession(ctx, session); err != nil {
+		r.logger.Error().Err(err).Str("session_id", session.ID).Msg("provisioning failed")
+	}
+}
+
+func (r *SimpleKubeReconciler) deprovisionAsync(session types.Session, nextPhase string) {
+	if !r.tryClaimDeprovision(session.ID) {
+		r.logger.Info().Str("session_id", session.ID).Msg("deprovisioning already in progress; skipping")
+		return
+	}
+	defer r.releaseDeprovision(session.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := r.deprovisionSession(ctx, session, nextPhase); err != nil {
+		r.logger.Error().Err(err).Str("session_id", session.ID).Msg("deprovisioning failed")
+	}
 }
 
 func (r *SimpleKubeReconciler) provisionSession(ctx context.Context, session types.Session) error {
@@ -376,6 +472,10 @@ func (r *SimpleKubeReconciler) provisionSessionSandbox(ctx context.Context, sess
 			payloads = agent.Payloads
 		}
 		payloads = r.appendInitialPromptPayload(ctx, session, sdk, payloads)
+		if !r.tryClaimExec(session.ID) {
+			r.logger.Info().Str("session_id", session.ID).Str("sandbox", sbxName).Msg("execAfterReady already running for session; skipping duplicate")
+			return nil
+		}
 		go r.execAfterReady(namespace, sbxName, session.ID, entrypoint, sdk, execEnv, payloads)
 		r.updateSessionPhaseWithNamespace(ctx, session, PhaseCreating, namespace)
 		return nil
@@ -396,6 +496,16 @@ func (r *SimpleKubeReconciler) provisionSessionSandbox(ctx context.Context, sess
 	sandboxPolicy, policyErr := r.resolveAgentSandboxPolicy(ctx, sdk, session.ProjectID, agent)
 	if policyErr != nil {
 		return fmt.Errorf("resolving sandbox policy: %w", policyErr)
+	}
+
+	// Merge platform-required network rules into the policy before
+	// CreateSandbox so the gateway receives the complete policy upfront.
+	if sandboxPolicy != nil {
+		sandboxPolicy = mergePlatformRules(sandboxPolicy, r.cfg.CPRuntimeNamespace)
+		r.logger.Info().
+			Str("sandbox", sbxName).
+			Int("network_policies", len(sandboxPolicy.NetworkPolicies)).
+			Msg("merged platform rules into sandbox policy")
 	}
 
 	req := &openshellpb.CreateSandboxRequest{
@@ -437,6 +547,10 @@ func (r *SimpleKubeReconciler) provisionSessionSandbox(ctx context.Context, sess
 		payloads = agent.Payloads
 	}
 	payloads = r.appendInitialPromptPayload(ctx, session, sdk, payloads)
+	if !r.tryClaimExec(session.ID) {
+		r.logger.Info().Str("session_id", session.ID).Str("sandbox", sbxName).Msg("execAfterReady already running for session; skipping duplicate")
+		return nil
+	}
 	go r.execAfterReady(namespace, sbxName, session.ID, entrypoint, sdk, execEnv, payloads)
 
 	r.updateSessionPhaseWithNamespace(ctx, session, PhaseCreating, namespace)
@@ -444,20 +558,19 @@ func (r *SimpleKubeReconciler) provisionSessionSandbox(ctx context.Context, sess
 }
 
 func (r *SimpleKubeReconciler) injectACPInternalPolicy(ctx context.Context, namespace, sandboxName string) error {
-	resp, err := r.gateway.UpdateConfig(ctx, namespace, &openshellpb.UpdateConfigRequest{
+	mergeOps := platformMergeOperations(r.cfg.CPRuntimeNamespace)
+	_, err := r.gateway.UpdateConfig(ctx, namespace, &openshellpb.UpdateConfigRequest{
 		Name:            sandboxName,
-		MergeOperations: []*openshellpb.PolicyMergeOperation{acpInternalMergeOperation(r.cfg.CPRuntimeNamespace)},
+		MergeOperations: mergeOps,
 	})
 	if err != nil {
-		return fmt.Errorf("UpdateConfig merge for ACP internal policy: %w", err)
+		return fmt.Errorf("UpdateConfig merge for platform policy: %w", err)
 	}
 	r.logger.Info().
 		Str("sandbox", sandboxName).
 		Str("namespace", namespace).
 		Str("cp_namespace", r.cfg.CPRuntimeNamespace).
-		Uint32("policy_version", resp.GetVersion()).
-		Str("policy_hash", resp.GetPolicyHash()).
-		Msg("_acp_internal policy merge confirmed by gateway")
+		Msg("injected platform policy via merge operation")
 	return nil
 }
 
@@ -632,6 +745,7 @@ func (r *SimpleKubeReconciler) sandboxReadinessTimeout() time.Duration {
 }
 
 func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID string, entrypoint []string, sdk *sdkclient.Client, execEnv map[string]string, payloads []types.Payload) {
+	defer r.releaseExec(sessionID)
 	timeout := r.sandboxReadinessTimeout()
 	pollCtx, pollCancel := context.WithTimeout(context.Background(), timeout)
 	defer pollCancel()
@@ -664,6 +778,7 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 	const maxNdotsRetries = 5
 	awaitingPodRestart := false
 	sawNonReady := false
+	var podDeletedAt time.Time
 	var firstErrorSeen time.Time
 
 	for {
@@ -739,12 +854,18 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 			}
 			if awaitingPodRestart {
 				if !sawNonReady {
-					r.logger.Debug().Str("sandbox", sbxName).Msg("sandbox still READY during graceful pod termination, waiting")
-					continue
+					if !podDeletedAt.IsZero() && time.Since(podDeletedAt) > 10*time.Second {
+						r.logger.Info().Str("sandbox", sbxName).Dur("elapsed", time.Since(podDeletedAt)).Msg("sandbox remained READY after pod deletion; assuming fast pod recreation")
+					} else {
+						r.logger.Debug().Str("sandbox", sbxName).Msg("sandbox still READY during graceful pod termination, waiting")
+						continue
+					}
+				} else {
+					r.logger.Info().Str("sandbox", sbxName).Msg("sandbox READY after pod recreation, re-verifying DNS")
 				}
-				r.logger.Info().Str("sandbox", sbxName).Msg("sandbox READY after pod recreation, re-verifying DNS")
 				awaitingPodRestart = false
 				sawNonReady = false
+				podDeletedAt = time.Time{}
 			}
 
 			sandboxID := sbxName
@@ -771,6 +892,7 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 					return
 				}
 				awaitingPodRestart = true
+				podDeletedAt = time.Now()
 				r.logger.Warn().Str("sandbox", sbxName).Int("ndots_retry", ndotsRetries).Msg("sandbox pod had ndots:5; deleted pod, waiting for recreation")
 				continue
 			}
@@ -781,10 +903,12 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 				Str("session_id", sessionID).
 				Msg("sandbox is ready, configuring policy")
 
-			// Inject _acp_internal policy AFTER the sandbox is READY.
+			// Inject platform policy AFTER the sandbox is READY.
 			// The supervisor syncs the image's default policy on boot;
 			// injecting earlier would merge onto an empty base, squashing
-			// the default rules.
+			// the default rules. When an agent-specific policy is set, we
+			// replace the image default; platform rules (_acp_internal,
+			// _mlflow_rh) are always merged on top.
 			if err := r.injectACPInternalPolicy(pollCtx, namespace, sbxName); err != nil {
 				r.logger.Error().Err(err).Str("sandbox", sbxName).Str("session_id", sessionID).Msg("failed to inject ACP internal policy")
 				failSession(fmt.Sprintf("failed to inject ACP internal policy: %v", err))
@@ -823,7 +947,31 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 						uploadCtx, cancel = context.WithTimeout(execCtx, 5*time.Minute)
 						defer cancel()
 					}
-					if uploadErr := r.gateway.UploadPayloads(uploadCtx, namespace, sandboxID, sshPayloads); uploadErr != nil {
+					const maxUploadRetries = 4
+					var uploadErr error
+					for attempt := range maxUploadRetries + 1 {
+						uploadErr = r.gateway.UploadPayloads(uploadCtx, namespace, sandboxID, sshPayloads)
+						if uploadErr == nil {
+							break
+						}
+						retryable := isUploadRetryable(uploadErr)
+						if !retryable || attempt == maxUploadRetries {
+							break
+						}
+						backoff := time.Duration(1<<uint(attempt)) * time.Second
+						r.logger.Warn().Err(uploadErr).Str("sandbox", sbxName).Int("attempt", attempt+1).Dur("backoff", backoff).Msg("payload upload failed with Unavailable, retrying")
+						timer := time.NewTimer(backoff)
+						select {
+						case <-uploadCtx.Done():
+							timer.Stop()
+							uploadErr = fmt.Errorf("upload context cancelled during retry: %w", uploadCtx.Err())
+						case <-timer.C:
+						}
+						if uploadCtx.Err() != nil {
+							break
+						}
+					}
+					if uploadErr != nil {
 						r.logger.Error().Err(uploadErr).Str("sandbox", sbxName).Msg("failed to upload payloads via SSH")
 						failSession(fmt.Sprintf("payload upload failed: %v", uploadErr))
 						return
@@ -889,6 +1037,17 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 			return
 		}
 	}
+}
+
+// isUploadRetryable returns true for transient supervisor relay failures.
+// The SSH library wraps gRPC errors with %v (not %w), so status.FromError
+// cannot extract the code — fall back to string matching.
+func isUploadRetryable(err error) bool {
+	if st, ok := status.FromError(err); ok && st.Code() == codes.Unavailable {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "code = Unavailable") && strings.Contains(msg, "supervisor")
 }
 
 func convertPayloads(payloads []types.Payload, logger zerolog.Logger, sandbox string) ([]openshell.Payload, bool) {
@@ -2357,7 +2516,7 @@ func (r *SimpleKubeReconciler) ensurePod(ctx context.Context, namespace string, 
 				"serviceAccountName":            saName,
 				"automountServiceAccountToken":  true,
 				"restartPolicy":                 "Never",
-				"terminationGracePeriodSeconds": int64(60),
+				"terminationGracePeriodSeconds": int64(15),
 				"volumes":                       r.buildVolumes(credTmpVolumes),
 				"containers":                    containers,
 			},

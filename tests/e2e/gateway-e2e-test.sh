@@ -193,7 +193,7 @@ if [ "$E2E_GW_CLEANUP" = "true" ]; then
   fi
 
   # Cleanup: delete the test project (namespace will be deprovisioned by project reconciler)
-  if $ACPCTL delete project "$E2E_GW_PROJECT" >/dev/null 2>&1; then
+  if $ACPCTL delete project "$E2E_GW_PROJECT" --yes >/dev/null 2>&1; then
     echo "  Cleaned up project '${E2E_GW_PROJECT}'"
   else
     echo "  Could not delete project '${E2E_GW_PROJECT}' (non-fatal)"
@@ -228,26 +228,29 @@ else
   exit 1
 fi
 
-REPO_AGENT_ID=$(echo "$AGENTS_RESP" \
-  | jq -r '.items[] | select(.name == "repo-clone-workspace") | .id' 2>/dev/null | head -1 || echo "")
+## repo-clone-workspace agent lookup removed — section 12 is skipped until
+## CI has a real or mock Vertex provider.
 
-if [ -z "$REPO_AGENT_ID" ]; then
-  # Apply the agent definition so the repo payload tests can run
-  $ACPCTL apply -f "$REPO_ROOT/examples/base/agents/repo-clone-workspace.yaml" \
-    --project "$TENANT" >/dev/null 2>&1 || true
-  # Re-fetch agents list
-  AGENTS_RESP=$(api GET "/api/ambient/v1/projects/${PROJECT_ID}/agents?size=50" || echo "")
-  REPO_AGENT_ID=$(echo "$AGENTS_RESP" \
-    | jq -r '.items[] | select(.name == "repo-clone-workspace") | .id' 2>/dev/null | head -1 || echo "")
-fi
+section "6. Apply sandbox policies"
 
-if [ -n "$REPO_AGENT_ID" ]; then
-  pass "Agent 'repo-clone-workspace' exists (id: ${REPO_AGENT_ID})"
+# Policies must exist before any session starts — agents reference them by
+# name (sandbox_policy: permissive) and the control plane will fail the
+# session if the policy is not found.
+if $ACPCTL apply -f "$REPO_ROOT/examples/base/policies/permissive.yaml" \
+  --project "$TENANT" >/dev/null 2>&1; then
+  pass "Permissive policy applied to ${TENANT}"
 else
-  skip "Agent 'repo-clone-workspace'" "not found — repo payload tests will be skipped"
+  fail "Could not apply permissive policy to ${TENANT}"
 fi
 
-section "6. Verify provider and credential"
+if $ACPCTL apply -f "$REPO_ROOT/examples/base/policies/locked-down.yaml" \
+  --project "$TENANT" >/dev/null 2>&1; then
+  pass "Locked-down policy applied to ${TENANT}"
+else
+  fail "Could not apply locked-down policy to ${TENANT}"
+fi
+
+section "7. Verify provider and credential"
 
 PROVIDERS_RESP=$(api GET "/api/ambient/v1/providers?size=50" || echo "")
 PROVIDER_NAME=$(echo "$PROVIDERS_RESP" \
@@ -269,7 +272,7 @@ else
   skip "Vertex credential" "not configured (non-fatal)"
 fi
 
-section "7. OpenShell gateway healthy"
+section "8. OpenShell gateway healthy"
 
 GW_READY=$(kubectl get statefulset openshell-gateway -n "$TENANT" \
   -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
@@ -291,7 +294,7 @@ else
   fail "agent-sandbox controller not ready"
 fi
 
-section "8. Start agent session"
+section "9. Start agent session"
 
 START_RESP=$(api POST "/api/ambient/v1/projects/${PROJECT_ID}/agents/${AGENT_ID}/start" \
   -d '{"prompt": "gateway-e2e-test: say hello"}' || echo "")
@@ -306,7 +309,7 @@ else
   echo "  Response: $(echo "$START_RESP" | head -c 200)"
 fi
 
-section "9. Session state verification"
+section "10. Session state verification"
 
 if [ -n "$CREATED_SESSION_ID" ]; then
   sleep 3
@@ -342,7 +345,7 @@ else
   skip "Session state verification" "session not created"
 fi
 
-section "10. Sandbox configuration verification"
+section "11. Sandbox configuration verification"
 
 if [ -n "$CREATED_SESSION_ID" ]; then
   # Derive sandbox pod name: "session-" + lowercased session ID (first 40 chars)
@@ -464,119 +467,189 @@ if [ -n "$CREATED_SESSION_ID" ]; then
     fi
 
   else
-    skip "Sandbox configuration verification" "sandbox pod not ready (phase: ${POD_PHASE:-unknown})"
+    fail "Sandbox configuration verification — sandbox pod not ready (phase: ${POD_PHASE:-unknown})"
   fi
 else
-  skip "Sandbox configuration verification" "session not created"
+  fail "Sandbox configuration verification — session not created"
 fi
 
-section "10. Repository payload verification"
-
+## Section 12: Repository payload verification — SKIPPED
+## The repo-clone-workspace agent requires providers: [vertex], which is not
+## available in CI. Re-enable once CI has a real or mock Vertex provider.
+section "12. Repository payload verification"
 REPO_SESSION_ID=""
-if [ -n "$REPO_AGENT_ID" ]; then
-  REPO_START_RESP=$(api POST "/api/ambient/v1/projects/${PROJECT_ID}/agents/${REPO_AGENT_ID}/start" \
-    -d '{"prompt": "gateway-e2e-test: repo payload"}' || echo "")
+skip "Repo payload verification" "vertex provider not available in CI"
 
-  REPO_SESSION_ID=$(echo "$REPO_START_RESP" \
+section "13. Network policy enforcement"
+
+LOCKED_SESSION_ID=""
+PERM_SESSION_ID=""
+
+# Policies were already applied in section 6; only the test-specific agents
+# need to be created here.
+$ACPCTL apply -k "$SCRIPT_DIR/fixtures/network-policy-test" \
+  --project "$TENANT" >/dev/null 2>&1 && \
+  pass "Network test agents applied to ${TENANT}" || \
+  fail "Could not apply network test agents"
+
+# Look up the locked-down agent
+AGENTS_RESP=$(api GET "/api/ambient/v1/projects/${PROJECT_ID}/agents?size=50" || echo "")
+LOCKED_AGENT_ID=$(echo "$AGENTS_RESP" \
+  | jq -r '.items[] | select(.name == "network-test-locked-down") | .id' 2>/dev/null | head -1 || echo "")
+
+if [ -n "$LOCKED_AGENT_ID" ]; then
+  # 11b. Start locked-down session and wait for sandbox pod
+  LOCKED_START_RESP=$(api POST "/api/ambient/v1/projects/${PROJECT_ID}/agents/${LOCKED_AGENT_ID}/start" \
+    -d '{"prompt": "gateway-e2e-test: network policy enforcement"}' || echo "")
+
+  LOCKED_SESSION_ID=$(echo "$LOCKED_START_RESP" \
     | jq -r '.session.id // empty' 2>/dev/null || echo "")
 
-  if [ -n "$REPO_SESSION_ID" ]; then
-    pass "Repo agent session started (id: ${REPO_SESSION_ID})"
+  if [ -n "$LOCKED_SESSION_ID" ]; then
+    pass "Locked-down session started (id: ${LOCKED_SESSION_ID})"
 
-    REPO_SBX_NAME="session-$(echo "${REPO_SESSION_ID:0:40}" | tr '[:upper:]' '[:lower:]')"
+    LOCKED_SBX_NAME="session-$(echo "${LOCKED_SESSION_ID:0:40}" | tr '[:upper:]' '[:lower:]')"
 
-    # Wait for sandbox pod to be running
-    REPO_POD_READY=false
+    LOCKED_POD_READY=false
     for i in $(seq 1 30); do
-      REPO_POD_PHASE=$(kubectl get pod "$REPO_SBX_NAME" -n "$TENANT" \
+      LOCKED_POD_PHASE=$(kubectl get pod "$LOCKED_SBX_NAME" -n "$TENANT" \
         -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-      if [ "$REPO_POD_PHASE" = "Running" ]; then
-        REPO_POD_READY=true
+      if [ "$LOCKED_POD_PHASE" = "Running" ]; then
+        LOCKED_POD_READY=true
         break
       fi
       sleep 2
     done
 
-    if [ "$REPO_POD_READY" = "true" ]; then
-      pass "Repo sandbox pod '${REPO_SBX_NAME}' is running"
+    if [ "$LOCKED_POD_READY" = "true" ]; then
+      pass "Locked-down sandbox pod '${LOCKED_SBX_NAME}' is running"
 
-      # Wait for the session to reach Running phase — payloads are uploaded
-      # only after sandbox READY + DNS verification + phase transition.
-      REPO_SESSION_RUNNING=false
+      # Wait for session to reach Running phase so sandbox is fully initialized
+      LOCKED_SESSION_RUNNING=false
       for i in $(seq 1 30); do
-        REPO_PHASE=$(api GET "/api/ambient/v1/sessions/${REPO_SESSION_ID}" 2>/dev/null \
+        LOCKED_PHASE=$(api GET "/api/ambient/v1/sessions/${LOCKED_SESSION_ID}" 2>/dev/null \
           | jq -r '.phase // empty' 2>/dev/null || echo "")
-        if [ "$REPO_PHASE" = "Running" ] || [ "$REPO_PHASE" = "Succeeded" ] || [ "$REPO_PHASE" = "Failed" ]; then
-          REPO_SESSION_RUNNING=true
+        if [ "$LOCKED_PHASE" = "Running" ] || [ "$LOCKED_PHASE" = "Succeeded" ] || [ "$LOCKED_PHASE" = "Failed" ]; then
+          LOCKED_SESSION_RUNNING=true
           break
         fi
         sleep 2
       done
 
-      # Poll for repo payload delivery (clone + tar transfer).
-      # Uses octocat/Hello-World which contains a single README file.
-      REPO_PAYLOADS_READY=false
-      if [ "$REPO_SESSION_RUNNING" = "true" ]; then
-        for i in $(seq 1 15); do
-          if kubectl exec -n "$TENANT" "$REPO_SBX_NAME" -- \
-              test -f /sandbox/workspace/README 2>/dev/null; then
-            REPO_PAYLOADS_READY=true
-            break
-          fi
-          sleep 2
-        done
-      fi
+      # 11c. Verify locked-down policy blocks external network access
+      # SSH into the sandbox and curl a known endpoint over plain HTTP so
+      # the proxy can intercept the GET and return policy_denied JSON.
+      # (HTTPS would fail at the CONNECT tunnel level with no response body.)
+      # FIXME: switch to `openshell sandbox exec` when it is fixed upstream.
+      if [ "$LOCKED_SESSION_RUNNING" = "true" ]; then
+        LOCKED_CURL_OUTPUT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          -o LogLevel=ERROR \
+          -o "ProxyCommand=openshell ssh-proxy --gateway-name $TENANT --name $LOCKED_SBX_NAME" \
+          "user@$LOCKED_SBX_NAME" \
+          'curl http://update.code.visualstudio.com 2>/dev/null' 2>/dev/null) || true
 
-      if [ "$REPO_PAYLOADS_READY" = "true" ]; then
-        pass "Repo payload delivered"
+        if echo "$LOCKED_CURL_OUTPUT" | grep -q "policy_denied"; then
+          pass "Locked-down policy denied outbound network access (policy_denied)"
+        else
+          fail "Locked-down policy did NOT deny outbound network access"
+          echo "  Output: $(echo "$LOCKED_CURL_OUTPUT" | head -c 200)"
+        fi
       else
-        fail "Repo payload not delivered — clone may have failed (session phase: ${REPO_PHASE:-unknown})"
-      fi
-
-      # 10a. Inline content payload present alongside repo payload
-      REPO_CLAUDE_MD=$(kubectl exec -n "$TENANT" "$REPO_SBX_NAME" -- \
-        cat /sandbox/CLAUDE.md 2>/dev/null || echo "")
-      if echo "$REPO_CLAUDE_MD" | grep -q "workspace"; then
-        pass "Mixed payload: inline CLAUDE.md delivered alongside repo"
-      else
-        fail "Mixed payload: inline CLAUDE.md not found or content mismatch"
-        echo "  Got: $(echo "$REPO_CLAUDE_MD" | head -c 200)"
-      fi
-
-      # 10b. README from cloned repo (octocat/Hello-World)
-      REPO_README=$(kubectl exec -n "$TENANT" "$REPO_SBX_NAME" -- \
-        cat /sandbox/workspace/README 2>/dev/null || echo "")
-      if echo "$REPO_README" | grep -qi "Hello"; then
-        pass "Repo payload: README found at /sandbox/workspace/README"
-      else
-        fail "Repo payload: README not found or unexpected content"
-        echo "  Got: '${REPO_README}'"
-      fi
-
-      # 10c. .git directory excluded from tar transfer
-      GIT_DIR_EXISTS=$(kubectl exec -n "$TENANT" "$REPO_SBX_NAME" -- \
-        ls -d /sandbox/workspace/.git 2>/dev/null || echo "")
-      if [ -z "$GIT_DIR_EXISTS" ]; then
-        pass "Repo payload: .git directory correctly excluded"
-      else
-        fail "Repo payload: .git directory should not exist at /sandbox/workspace/.git"
+        fail "Locked-down network test — session not Running (phase: ${LOCKED_PHASE:-unknown})"
       fi
     else
-      skip "Repo payload verification" "sandbox pod not ready (phase: ${REPO_POD_PHASE:-unknown})"
+      fail "Locked-down network test — sandbox pod not ready (phase: ${LOCKED_POD_PHASE:-unknown})"
     fi
   else
-    fail "Failed to start session for agent 'repo-clone-workspace'"
-    echo "  Response: $(echo "$REPO_START_RESP" | head -c 200)"
+    fail "Failed to start locked-down session"
+    echo "  Response: $(echo "$LOCKED_START_RESP" | head -c 200)"
   fi
 else
-  fail "Repo payload verification requires agent 'repo-clone-workspace' (not found)"
+  fail "Agent 'network-test-locked-down' not found after apply"
+fi
+
+# 11d. Verify permissive policy allows external network access
+# Start a dedicated permissive session and curl api.anthropic.com via the
+# sandbox proxy. The request should succeed (not return policy_denied).
+PERM_AGENT_ID=$(echo "$AGENTS_RESP" \
+  | jq -r '.items[] | select(.name == "network-test-permissive") | .id' 2>/dev/null | head -1 || echo "")
+
+if [ -n "$PERM_AGENT_ID" ]; then
+  PERM_START_RESP=$(api POST "/api/ambient/v1/projects/${PROJECT_ID}/agents/${PERM_AGENT_ID}/start" \
+    -d '{"prompt": "gateway-e2e-test: network policy enforcement"}' || echo "")
+
+  PERM_SESSION_ID=$(echo "$PERM_START_RESP" \
+    | jq -r '.session.id // empty' 2>/dev/null || echo "")
+
+  if [ -n "$PERM_SESSION_ID" ]; then
+    pass "Permissive session started (id: ${PERM_SESSION_ID})"
+
+    PERM_SBX_NAME="session-$(echo "${PERM_SESSION_ID:0:40}" | tr '[:upper:]' '[:lower:]')"
+
+    PERM_POD_READY=false
+    for i in $(seq 1 30); do
+      PERM_POD_PHASE=$(kubectl get pod "$PERM_SBX_NAME" -n "$TENANT" \
+        -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+      if [ "$PERM_POD_PHASE" = "Running" ]; then
+        PERM_POD_READY=true
+        break
+      fi
+      sleep 2
+    done
+
+    if [ "$PERM_POD_READY" = "true" ]; then
+      pass "Permissive sandbox pod '${PERM_SBX_NAME}' is running"
+
+      PERM_SESSION_RUNNING=false
+      for i in $(seq 1 30); do
+        PERM_PHASE=$(api GET "/api/ambient/v1/sessions/${PERM_SESSION_ID}" 2>/dev/null \
+          | jq -r '.phase // empty' 2>/dev/null || echo "")
+        if [ "$PERM_PHASE" = "Running" ] || [ "$PERM_PHASE" = "Succeeded" ] || [ "$PERM_PHASE" = "Failed" ]; then
+          PERM_SESSION_RUNNING=true
+          break
+        fi
+        sleep 2
+      done
+
+      # Verify permissive policy allows external network access via curl.
+      # The permissive policy allows /usr/bin/curl to reach
+      # update.code.visualstudio.com:443 (vscode policy). If policy_denied
+      # appears, the proxy blocked it; any other response means it got through.
+      # FIXME: switch to `openshell sandbox exec` when it is fixed upstream.
+      if [ "$PERM_SESSION_RUNNING" = "true" ]; then
+        PERM_CURL_OUTPUT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          -o LogLevel=ERROR \
+          -o "ProxyCommand=openshell ssh-proxy --gateway-name $TENANT --name $PERM_SBX_NAME" \
+          "user@$PERM_SBX_NAME" \
+          'curl https://update.code.visualstudio.com 2>/dev/null' 2>/dev/null) || true
+
+        if echo "$PERM_CURL_OUTPUT" | grep -q "policy_denied"; then
+          fail "Permissive policy denied update.code.visualstudio.com (policy_denied)"
+          echo "  Output: $(echo "$PERM_CURL_OUTPUT" | head -c 200)"
+        elif [ -n "$PERM_CURL_OUTPUT" ]; then
+          pass "Permissive policy allowed update.code.visualstudio.com"
+        else
+          fail "Permissive network test — no response from curl"
+        fi
+      else
+        fail "Permissive network test — session not Running (phase: ${PERM_PHASE:-unknown})"
+      fi
+    else
+      fail "Permissive network test — sandbox pod not ready (phase: ${PERM_POD_PHASE:-unknown})"
+    fi
+  else
+    fail "Failed to start permissive session"
+    echo "  Response: $(echo "$PERM_START_RESP" | head -c 200)"
+  fi
+else
+  fail "Agent 'network-test-permissive' not found after apply"
 fi
 
 section "Cleanup"
 
 if [ "$SKIP_CLEANUP" = "true" ]; then
   echo -e "  ${YELLOW}Skipping cleanup (--skip-cleanup)${NC}"
-  for _sid in "$CREATED_SESSION_ID" "$REPO_SESSION_ID"; do
+  for _sid in "$CREATED_SESSION_ID" "$REPO_SESSION_ID" "$LOCKED_SESSION_ID" "${PERM_SESSION_ID:-}"; do
     [ -z "$_sid" ] && continue
     _pod="session-$(echo "${_sid:0:40}" | tr '[:upper:]' '[:lower:]')"
     _phase=$(kubectl get pod "$_pod" -n "$TENANT" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
@@ -596,6 +669,16 @@ else
     api DELETE "/api/ambient/v1/sessions/${REPO_SESSION_ID}" >/dev/null 2>&1 && \
       echo "  Deleted repo session ${REPO_SESSION_ID}" || \
       echo "  Could not delete repo session (non-fatal)"
+  fi
+  if [ -n "$LOCKED_SESSION_ID" ]; then
+    api DELETE "/api/ambient/v1/sessions/${LOCKED_SESSION_ID}" >/dev/null 2>&1 && \
+      echo "  Deleted locked-down session ${LOCKED_SESSION_ID}" || \
+      echo "  Could not delete locked-down session (non-fatal)"
+  fi
+  if [ -n "${PERM_SESSION_ID:-}" ]; then
+    api DELETE "/api/ambient/v1/sessions/${PERM_SESSION_ID}" >/dev/null 2>&1 && \
+      echo "  Deleted permissive session ${PERM_SESSION_ID}" || \
+      echo "  Could not delete permissive session (non-fatal)"
   fi
 fi
 

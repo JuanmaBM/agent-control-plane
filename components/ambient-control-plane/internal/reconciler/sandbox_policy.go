@@ -6,6 +6,7 @@ import (
 )
 
 const acpInternalPolicyKey = "_acp_internal"
+const mlflowPolicyKey = "_mlflow_rh"
 
 func acpInternalRule(namespace string) *sandboxpb.NetworkPolicyRule {
 	return &sandboxpb.NetworkPolicyRule{
@@ -27,16 +28,54 @@ func acpInternalRule(namespace string) *sandboxpb.NetworkPolicyRule {
 	}
 }
 
-// acpInternalMergeOperation builds a PolicyMergeOperation that adds the
-// _acp_internal network rule using namespace-specific endpoints. The gateway
-// applies this additively — existing default policy rules are preserved.
-func acpInternalMergeOperation(namespace string) *openshellpb.PolicyMergeOperation {
-	return &openshellpb.PolicyMergeOperation{
-		Operation: &openshellpb.PolicyMergeOperation_AddRule{
-			AddRule: &openshellpb.AddNetworkRule{
-				RuleName: acpInternalPolicyKey,
-				Rule:     acpInternalRule(namespace),
+func mlflowRule() *sandboxpb.NetworkPolicyRule {
+	return &sandboxpb.NetworkPolicyRule{
+		Name: "mlflow-tracking",
+		Endpoints: []*sandboxpb.NetworkEndpoint{
+			{Host: "mlflow.apps.int.spoke.prod.us-west-2.aws.paas.redhat.com", Port: 443},
+		},
+		Binaries: []*sandboxpb.NetworkBinary{
+			{Path: "/sandbox/.venv/bin/python"},
+			{Path: "/sandbox/.venv/bin/python3"},
+			{Path: "/sandbox/.venv/bin/uvicorn"},
+		},
+	}
+}
+
+// platformMergeOperations builds the PolicyMergeOperations for platform-required
+// network rules that must be present in every sandbox regardless of the agent's
+// policy. Currently this includes _acp_internal (control plane + API server
+// connectivity) and _mlflow_rh (MLflow tracking).
+func platformMergeOperations(namespace string) []*openshellpb.PolicyMergeOperation {
+	return []*openshellpb.PolicyMergeOperation{
+		{
+			Operation: &openshellpb.PolicyMergeOperation_AddRule{
+				AddRule: &openshellpb.AddNetworkRule{
+					RuleName: acpInternalPolicyKey,
+					Rule:     acpInternalRule(namespace),
+				},
+			},
+		},
+		{
+			Operation: &openshellpb.PolicyMergeOperation_AddRule{
+				AddRule: &openshellpb.AddNetworkRule{
+					RuleName: mlflowPolicyKey,
+					Rule:     mlflowRule(),
+				},
 			},
 		},
 	}
+}
+
+// mergePlatformRules injects platform-required network rules (_acp_internal,
+// _mlflow_rh) directly into the SandboxPolicy's NetworkPolicies map. This
+// is called before CreateSandbox so the gateway receives the complete policy
+// upfront — no post-hoc UpdateConfig replacement needed.
+func mergePlatformRules(policy *sandboxpb.SandboxPolicy, namespace string) *sandboxpb.SandboxPolicy {
+	if policy.NetworkPolicies == nil {
+		policy.NetworkPolicies = make(map[string]*sandboxpb.NetworkPolicyRule)
+	}
+	policy.NetworkPolicies[acpInternalPolicyKey] = acpInternalRule(namespace)
+	policy.NetworkPolicies[mlflowPolicyKey] = mlflowRule()
+	return policy
 }

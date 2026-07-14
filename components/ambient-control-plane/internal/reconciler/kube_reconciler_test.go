@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ambient-code/platform/components/ambient-control-plane/internal/gateway"
@@ -13,6 +15,8 @@ import (
 	pb "github.com/ambient-code/platform/components/ambient-control-plane/internal/openshell/grpc/openshell/v1"
 	"github.com/ambient-code/platform/components/ambient-sdk/go-sdk/types"
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -1020,5 +1024,94 @@ func TestReconcileGateway_NamespacePlaceholderSubstitution(t *testing.T) {
 		if err := gateway.ValidateDNSName(dns); err != nil {
 			t.Errorf("resolved DNS name %q failed validation: %v", dns, err)
 		}
+	}
+}
+
+func TestIsUploadRetryable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "direct gRPC Unavailable",
+			err:  status.Error(codes.Unavailable, "connection refused"),
+			want: true,
+		},
+		{
+			name: "SSH-wrapped supervisor relay failure",
+			err:  fmt.Errorf("SSH handshake: ssh: handshake failed: rpc error: code = Unavailable desc = supervisor relay failed: supervisor session disconnected"),
+			want: true,
+		},
+		{
+			name: "gRPC PermissionDenied is not retryable",
+			err:  status.Error(codes.PermissionDenied, "access denied"),
+			want: false,
+		},
+		{
+			name: "generic error is not retryable",
+			err:  fmt.Errorf("connection refused"),
+			want: false,
+		},
+		{
+			name: "Unavailable without supervisor is retryable via gRPC status",
+			err:  status.Error(codes.Unavailable, "transport closing"),
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isUploadRetryable(tt.err)
+			if got != tt.want {
+				t.Errorf("isUploadRetryable(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTryClaimExec_PreventsDoubleSpawn(t *testing.T) {
+	r := &SimpleKubeReconciler{
+		activeExecs: make(map[string]struct{}),
+	}
+
+	if !r.tryClaimExec("session-1") {
+		t.Fatal("first claim for session-1 should succeed")
+	}
+	if r.tryClaimExec("session-1") {
+		t.Fatal("second claim for session-1 should be rejected")
+	}
+	if !r.tryClaimExec("session-2") {
+		t.Fatal("claim for different session should succeed")
+	}
+
+	r.releaseExec("session-1")
+
+	if !r.tryClaimExec("session-1") {
+		t.Fatal("claim after release should succeed")
+	}
+}
+
+func TestTryClaimExec_ConcurrentSafety(t *testing.T) {
+	r := &SimpleKubeReconciler{
+		activeExecs: make(map[string]struct{}),
+	}
+
+	const goroutines = 50
+	var claimed atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			if r.tryClaimExec("contested-session") {
+				claimed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := claimed.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 goroutine to claim the exec slot, got %d", got)
 	}
 }
