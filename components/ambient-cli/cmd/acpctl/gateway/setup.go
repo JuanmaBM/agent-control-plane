@@ -21,7 +21,7 @@ import (
 )
 
 var setupCmd = &cobra.Command{
-	Use:   "setup <name>",
+	Use:   "setup-cli <name>",
 	Short: "Configure openshell CLI access for a gateway",
 	Long: `Configure local openshell CLI access for a named gateway.
 
@@ -29,7 +29,7 @@ Extracts mTLS certificates from the cluster, starts a kubectl port-forward,
 and registers the gateway with the openshell CLI.
 
 Requires kubectl and openshell to be installed and a valid kubeconfig context.`,
-	Example: "  acpctl gateway setup my-gateway",
+	Example: "  acpctl gateway setup-cli my-gateway",
 	Args:    cobra.ExactArgs(1),
 	RunE:    runSetup,
 }

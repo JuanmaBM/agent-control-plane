@@ -995,7 +995,7 @@ func printGatewayConnectionInfo(w io.Writer, gw *sdktypes.Gateway) {
 	}
 	fmt.Fprintf(w, "  TLS Secret:   openshell-server-tls (namespace: %s)\n", namespace)
 	fmt.Fprintf(w, "\nSetup openshell CLI:\n")
-	fmt.Fprintf(w, "  acpctl gateway setup %s\n", gw.Name)
+	fmt.Fprintf(w, "  acpctl gateway setup-cli %s\n", gw.Name)
 }
 
 func sessionChanged(old, current sdktypes.Session) bool {
