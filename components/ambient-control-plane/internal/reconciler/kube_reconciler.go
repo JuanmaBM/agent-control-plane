@@ -417,12 +417,11 @@ func (r *SimpleKubeReconciler) provisionSessionSandbox(ctx context.Context, sess
 		}
 	}
 
-	// TODO(#223): add stop_on_run_finished to gRPC Session proto to avoid this REST fetch.
 	stopOnRunFinished := true
 	if freshSession, fetchErr := sdk.Sessions().Get(ctx, session.ID); fetchErr != nil {
 		r.logger.Warn().Err(fetchErr).Str("session_id", session.ID).Msg("failed to fetch session for stop_on_run_finished; defaulting to true")
-	} else if freshSession.StopOnRunFinished != nil {
-		stopOnRunFinished = *freshSession.StopOnRunFinished
+	} else {
+		stopOnRunFinished = freshSession.StopOnRunFinished
 	}
 
 	namespace := r.provisioner.NamespaceName(project.Name)
@@ -1074,7 +1073,14 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 				}
 			}
 
-			// Resolves FIXME(#223): session lifecycle is now handled via stop_on_run_finished.
+			// Re-read stop_on_run_finished at decision time so a PATCH that arrives
+			// during the run is honoured (the value may have changed since provisioning started).
+			if freshSession, fetchErr := sdk.Sessions().Get(context.Background(), sessionID); fetchErr != nil {
+				r.logger.Warn().Err(fetchErr).Str("session_id", sessionID).Msg("failed to fetch session for stop_on_run_finished; using initial value")
+			} else {
+				stopOnRunFinished = freshSession.StopOnRunFinished
+			}
+
 			r.logger.Info().
 				Str("sandbox", sbxName).
 				Str("session_id", sessionID).
@@ -2865,10 +2871,8 @@ func (r *SimpleKubeReconciler) buildEnv(ctx context.Context, session types.Sessi
 	}
 	env = r.appendMLflowRuntimeEnv(env)
 
-	if session.StopOnRunFinished != nil {
-		if *session.StopOnRunFinished {
-			env = append(env, envVar("STOP_ON_RUN_FINISHED", "true"))
-		}
+	if session.StopOnRunFinished {
+		env = append(env, envVar("STOP_ON_RUN_FINISHED", "true"))
 	} else if session.SourceScheduledSessionID != "" {
 		env = append(env, envVar("STOP_ON_RUN_FINISHED", "true"))
 	}
