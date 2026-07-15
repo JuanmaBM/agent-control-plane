@@ -681,13 +681,14 @@ _cleanup_sandboxes
 
 section "12. Short-running session lifecycle (stop_on_run_finished)"
 
-# Start a new session for the same agent and PATCH it with stop_on_run_finished=true.
-# When the runner exec finishes, the control plane should mark the session as Completed
-# and the sandbox should be deprovisioned automatically.
+# Start a new session with stop_on_run_finished=true in the request body.
+# The flag must be set at creation time so the sandbox is provisioned with the
+# STOP_ON_RUN_FINISHED env var — PATCHing after start is too late because the
+# runner has already launched without the env var.
 
 SHORT_SESSION_ID=""
 SHORT_START_RESP=$(api POST "/api/ambient/v1/projects/${PROJECT_ID}/agents/${AGENT_ID}/start" \
-  -d '{"prompt": "gateway-e2e-test: short-running session"}' || echo "")
+  -d '{"prompt": "gateway-e2e-test: short-running session", "stop_on_run_finished": true}' || echo "")
 
 SHORT_SESSION_ID=$(echo "$SHORT_START_RESP" \
   | jq -r '.session.id // empty' 2>/dev/null || echo "")
@@ -695,13 +696,13 @@ SHORT_SESSION_ID=$(echo "$SHORT_START_RESP" \
 if [ -n "$SHORT_SESSION_ID" ]; then
   pass "Short-running session started (id: ${SHORT_SESSION_ID})"
 
-  PATCH_RESP=$(api PATCH "/api/ambient/v1/sessions/${SHORT_SESSION_ID}" \
-    -d '{"stop_on_run_finished": true}' || echo "")
-  PATCHED_FLAG=$(echo "$PATCH_RESP" | jq -r '.stop_on_run_finished // empty' 2>/dev/null || echo "")
-  if [ "$PATCHED_FLAG" = "true" ]; then
-    pass "stop_on_run_finished set to true"
+  # Verify the flag was persisted on the session
+  SHORT_SESSION_RESP=$(api GET "/api/ambient/v1/sessions/${SHORT_SESSION_ID}" || echo "")
+  SHORT_FLAG=$(echo "$SHORT_SESSION_RESP" | jq -r '.stop_on_run_finished // empty' 2>/dev/null || echo "")
+  if [ "$SHORT_FLAG" = "true" ]; then
+    pass "stop_on_run_finished set to true at creation"
   else
-    fail "Could not set stop_on_run_finished (got: '${PATCHED_FLAG}')"
+    fail "stop_on_run_finished not set on session (got: '${SHORT_FLAG}')"
   fi
 
   SHORT_SBX_NAME="session-$(echo "${SHORT_SESSION_ID:0:40}" | tr '[:upper:]' '[:lower:]')"

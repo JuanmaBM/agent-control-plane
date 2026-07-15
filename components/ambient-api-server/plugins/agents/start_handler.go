@@ -101,7 +101,8 @@ func (h *startHandler) Start(w http.ResponseWriter, r *http.Request) {
 
 			var requestPrompt *string
 			var body struct {
-				Prompt string `json:"prompt"`
+				Prompt            string `json:"prompt"`
+				StopOnRunFinished *bool  `json:"stop_on_run_finished,omitempty"`
 			}
 			if r.ContentLength > 0 {
 				if decErr := json.NewDecoder(r.Body).Decode(&body); decErr == nil && body.Prompt != "" {
@@ -110,10 +111,11 @@ func (h *startHandler) Start(w http.ResponseWriter, r *http.Request) {
 			}
 
 			sess := &sessions.Session{
-				Name:      fmt.Sprintf("%s-%d", agent.Name, time.Now().Unix()),
-				Prompt:    agent.Prompt,
-				ProjectId: &agent.ProjectId,
-				AgentId:   &agentID,
+				Name:              fmt.Sprintf("%s-%d", agent.Name, time.Now().Unix()),
+				Prompt:            agent.Prompt,
+				ProjectId:         &agent.ProjectId,
+				AgentId:           &agentID,
+				StopOnRunFinished: body.StopOnRunFinished,
 			}
 
 			username := auth.GetUsernameFromContext(ctx)
