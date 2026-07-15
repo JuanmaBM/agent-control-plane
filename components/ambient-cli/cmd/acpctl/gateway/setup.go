@@ -435,7 +435,7 @@ func setupOpenshellGateway(w io.Writer, gw *sdktypes.Gateway, cfg *config.Config
 			}
 			if err := fetchClientTLS(localName, namespace); err != nil {
 				fmt.Fprintf(w, "Warning: could not fetch mTLS certs: %v\n", err)
-				fmt.Fprintf(w, "You may need to pass --gateway-insecure to openshell commands\n")
+				fmt.Fprintf(w, "Ensure kubectl has access to namespace %q or manually provision certs\n", namespace)
 			}
 			fmt.Fprintf(w, "OIDC credentials configured from acpctl\n")
 		} else {

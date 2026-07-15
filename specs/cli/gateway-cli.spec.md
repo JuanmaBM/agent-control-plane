@@ -59,8 +59,7 @@ When a single gateway is retrieved, the CLI SHALL print a connection info block 
 
 - **Cluster DNS**: The in-cluster service address (`openshell-gateway.<namespace>.svc.cluster.local:8080`)
 - **Server SANs**: The gateway's configured DNS names (only if `serverDnsNames` is non-empty)
-- **TLS Secret**: The name and namespace of the mTLS secret (`openshell-server-tls`)
-- **Setup hint**: The `acpctl gateway setup-cli <name>` command to configure local CLI access
+- **Setup hint**: The `acpctl gateway setup-cli <name> --gateway-url <url>` command to configure local CLI access
 
 The namespace SHALL be derived from the gateway's `projectID`, lowercased.
 
@@ -71,8 +70,7 @@ The namespace SHALL be derived from the gateway's `projectID`, lowercased.
 - THEN the connection info shows:
   - Cluster DNS: `openshell-gateway.platform.svc.cluster.local:8080`
   - Server SANs: `gw.example.com`
-  - TLS Secret: `openshell-server-tls (namespace: platform)`
-  - Setup hint: `acpctl gateway setup-cli alpha`
+  - Setup hint: `acpctl gateway setup-cli alpha --gateway-url <url>`
 
 #### Scenario: Connection info without DNS names
 
@@ -99,70 +97,184 @@ The `acpctl delete` command SHALL support `gateway` as a resource type with alia
 
 ### Requirement: Gateway Subcommand Tree
 
-The `acpctl gateway` top-level command SHALL provide a subcommand tree for gateway management operations. Running `acpctl gateway` without a subcommand SHALL display help text.
+The `acpctl gateway` top-level command SHALL provide a subcommand tree for gateway management operations. Running `acpctl gateway` without a subcommand SHALL display help text listing available subcommands (`setup-cli`, `remove-cli`).
 
 ### Requirement: Gateway Setup CLI
 
-The `acpctl gateway setup-cli <name>` command SHALL configure local openshell CLI access for a named gateway. The command performs the following steps in order:
+The `acpctl gateway setup-cli [name]` command SHALL configure local openshell CLI access for a named gateway.
 
-1. **Resolve gateway** — Fetch the gateway by name or ID from the API server
-2. **Prerequisite checks** — Verify `kubectl` and `openshell` are in PATH; verify the target namespace exists in the cluster; verify the `openshell-server-tls` secret exists
-3. **Extract mTLS certificates** — Extract `ca.crt`, `tls.crt`, and `tls.key` from the `openshell-server-tls` secret and write them to `~/.config/openshell/gateways/<name>/mtls/`
-4. **Start port-forward** — Run `kubectl port-forward` to the `openshell-gateway` StatefulSet on port 8080 with an ephemeral local port
-5. **Register gateway** — Remove any existing openshell gateway registration with the same name, then register the gateway via `openshell gateway add --name <name> --local https://localhost:<port>`
-6. **Verify connectivity** — Run `openshell -g <name> provider list` to verify the connection works
-7. **Hold port-forward** — Keep the port-forward running in the foreground until the user presses Ctrl+C
+#### Flags
 
-The namespace SHALL be derived from the gateway's `projectID`, lowercased.
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--gateway-url` | Yes | — | Gateway URL (e.g. `https://gateway.example.com:8080`) |
+| `--project` | No | Configured project | Project/namespace to look up the gateway in |
+| `--print` | No | `false` | Print openshell commands instead of running them |
 
-Private key files (`tls.key`) SHALL be written with `0600` permissions. Other certificate files SHALL use `0644`.
+The API-side gateway name defaults to `openshell-gateway` if the positional `[name]` argument is omitted. The local openshell registration is named `<project>-<gateway-name>`.
 
-#### Scenario: Successful setup
+#### Modes of Operation
 
-- GIVEN gateway "alpha" exists in project "platform"
-- AND kubectl is configured with access to namespace "platform"
-- AND the `openshell-server-tls` secret exists in namespace "platform"
-- AND `kubectl` and `openshell` are installed
-- WHEN the user runs `acpctl gateway setup-cli alpha`
-- THEN mTLS certs are extracted to `~/.config/openshell/gateways/alpha/mtls/`
-- AND a port-forward starts to `statefulset/openshell-gateway` in namespace "platform"
-- AND the gateway is registered with the openshell CLI
-- AND a connectivity check runs
-- AND the port-forward remains active until interrupted
+The command operates in one of three modes based on the current state:
 
-#### Scenario: kubectl not installed
+**Non-interactive new registration** (OIDC gateway + acpctl credentials available):
 
-- GIVEN `kubectl` is not in PATH
-- WHEN the user runs `acpctl gateway setup-cli alpha`
-- THEN the command exits with error: `kubectl not found in PATH: required for gateway setup`
+1. Fetch the gateway resource from the API server
+2. Write `metadata.json` to `~/.config/openshell/gateways/<local-name>/` with gateway endpoint, auth mode, and OIDC configuration
+3. Write `oidc_token.json` with the user's acpctl access token and refresh token
+4. Attempt to fetch mTLS certificates from the `openshell-client-tls` K8s secret in the gateway's namespace via `kubectl`, writing `ca.crt`, `tls.crt`, and `tls.key` to `~/.config/openshell/gateways/<local-name>/mtls/`
+5. If mTLS fetch fails, warn the user that `--gateway-insecure` may be needed (non-fatal)
+
+**Non-interactive re-authentication** (gateway already registered + acpctl credentials available):
+
+1. Refresh the `oidc_token.json` with current acpctl credentials
+2. Attempt to refresh mTLS certificates (non-fatal on failure)
+
+**Interactive fallback** (no acpctl credentials OR non-OIDC gateway):
+
+1. For new registrations: delegate to `openshell gateway add` with appropriate flags
+2. For re-authentication: delegate to `openshell gateway login`
+
+#### mTLS Certificate Handling
+
+The `openshell-client-tls` K8s secret in the gateway's namespace contains `ca.crt`, `tls.crt`, and `tls.key`. These are fetched via `kubectl get secret` and written to the openshell config directory.
+
+- `ca.crt` enables openshell to verify the gateway's TLS certificate without `--gateway-insecure`
+- `tls.crt` and `tls.key` provide mTLS client authentication
+- Private key files (`tls.key`) SHALL be written with `0600` permissions. Other certificate files SHALL use `0644`.
+- `kubectl` must be in PATH and configured with access to the gateway's namespace
+- mTLS fetch failure is non-fatal: the gateway registration succeeds but may require `--gateway-insecure`
+
+#### Print Mode
+
+When `--print` is specified, the command SHALL print the equivalent openshell commands (gateway add, gateway login, provider list) instead of executing them. This is useful for debugging or manual execution.
+
+#### Scenario: Non-interactive setup with OIDC credentials
+
+- GIVEN gateway "alpha" exists with OIDC config in project "platform"
+- AND the user has a valid acpctl OIDC token (via `acpctl login --password-grant` or `--use-auth-code`)
+- AND `kubectl` has access to namespace "platform"
+- AND the `openshell-client-tls` secret exists in namespace "platform"
+- WHEN the user runs `acpctl gateway setup-cli alpha --gateway-url https://gw.example.com:8080`
+- THEN metadata.json and oidc_token.json are written to `~/.config/openshell/gateways/platform-alpha/`
+- AND mTLS certs are written to `~/.config/openshell/gateways/platform-alpha/mtls/`
+- AND `openshell -g platform-alpha provider list` works without `--gateway-insecure`
+
+#### Scenario: Non-interactive setup without kubectl access
+
+- GIVEN gateway "alpha" exists with OIDC config
+- AND the user has a valid acpctl OIDC token
+- BUT `kubectl` is not in PATH or lacks access to the namespace
+- WHEN the user runs `acpctl gateway setup-cli alpha --gateway-url https://gw.example.com:8080`
+- THEN metadata.json and oidc_token.json are written successfully
+- AND a warning is printed: `Warning: could not fetch mTLS certs`
+- AND the user is advised to manually provision mTLS certificates or ensure kubectl access
+
+#### Scenario: Re-authentication of existing gateway
+
+- GIVEN gateway "platform-alpha" is already registered in openshell
+- AND the user has refreshed their acpctl credentials
+- WHEN the user runs `acpctl gateway setup-cli alpha --gateway-url https://gw.example.com:8080`
+- THEN the oidc_token.json is updated with current credentials
+- AND mTLS certs are refreshed
+
+#### Scenario: Interactive fallback without credentials
+
+- GIVEN gateway "alpha" exists with OIDC config
+- AND the user has no acpctl access token
+- WHEN the user runs `acpctl gateway setup-cli alpha --gateway-url https://gw.example.com:8080`
+- THEN `openshell gateway add` is invoked with OIDC flags
+- AND the browser-based OIDC login flow opens
 
 #### Scenario: openshell not installed
 
 - GIVEN `openshell` is not in PATH
-- WHEN the user runs `acpctl gateway setup-cli alpha`
+- WHEN the user runs `acpctl gateway setup-cli alpha --gateway-url ...`
 - THEN the command exits with error: `openshell not found in PATH: required for gateway setup`
 
-#### Scenario: Namespace does not exist
+#### Scenario: Print mode
 
-- GIVEN gateway "alpha" belongs to project "missing"
-- AND namespace "missing" does not exist in the cluster
-- WHEN the user runs `acpctl gateway setup-cli alpha`
-- THEN the command exits with error: `namespace "missing" does not exist in the cluster`
+- GIVEN gateway "alpha" exists
+- WHEN the user runs `acpctl gateway setup-cli alpha --gateway-url https://gw.example.com:8080 --print`
+- THEN the output shows the openshell gateway add, login, and verify commands
+- AND no commands are executed
 
-#### Scenario: TLS secret not found
+### Requirement: Gateway Remove CLI
 
-- GIVEN gateway "alpha" belongs to project "platform"
-- AND the `openshell-server-tls` secret does not exist in namespace "platform"
-- WHEN the user runs `acpctl gateway setup-cli alpha`
-- THEN the command exits with error indicating the secret is not found and the gateway may not be fully provisioned
+The `acpctl gateway remove-cli [name]` command SHALL remove a local openshell CLI gateway registration.
 
-#### Scenario: Connectivity check fails
+#### Flags
 
-- GIVEN all setup steps succeed
-- BUT `openshell provider list` fails
-- WHEN the user runs `acpctl gateway setup-cli alpha`
-- THEN a warning is printed with troubleshooting guidance
-- AND the port-forward remains active (the command does not exit on verification failure)
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--project` | No | Configured project | Project/namespace used to derive the gateway name |
+
+If the positional `[name]` argument is omitted, the gateway name is derived as `<project>-openshell-gateway`.
+
+The command delegates to `openshell gateway remove <name>`.
+
+#### Scenario: Remove a registered gateway
+
+- GIVEN gateway "platform-openshell-gateway" is registered in openshell
+- WHEN the user runs `acpctl gateway remove-cli --project platform`
+- THEN the gateway registration is removed from openshell
+- AND the output shows `Gateway platform-openshell-gateway removed`
+
+#### Scenario: Remove by explicit name
+
+- GIVEN gateway "my-gateway" is registered in openshell
+- WHEN the user runs `acpctl gateway remove-cli my-gateway`
+- THEN the gateway registration is removed
+
+#### Scenario: Gateway not registered
+
+- GIVEN gateway "missing" is not registered in openshell
+- WHEN the user runs `acpctl gateway remove-cli missing`
+- THEN the command exits with error: `gateway "missing" is not registered in openshell`
+
+#### Scenario: openshell not installed
+
+- GIVEN `openshell` is not in PATH
+- WHEN the user runs `acpctl gateway remove-cli ...`
+- THEN the command exits with error: `openshell not found in PATH: required for gateway removal`
+
+### Requirement: OIDC Password Grant Login
+
+The `acpctl login` command SHALL support `--password-grant` for headless OIDC token acquisition via the OAuth2 Resource Owner Password Credentials (ROPC) grant.
+
+#### Flags
+
+| Flag | Required with `--password-grant` | Description |
+|------|----------------------------------|-------------|
+| `--password-grant` | — | Enable ROPC grant mode |
+| `--username` | Yes | OIDC username |
+| `--password` | Yes | OIDC password |
+| `--issuer-url` | No (default: Red Hat SSO) | OIDC issuer URL |
+| `--client-id` | No (default: `ocm-cli`) | OAuth2 client ID |
+
+The command POSTs to `<issuer-url>/protocol/openid-connect/token` with `grant_type=password`. Both access and refresh tokens are saved to the acpctl config.
+
+`--password-grant` is mutually exclusive with `--token`, `--use-auth-code`, and `--client-credentials`.
+
+This mode enables non-interactive gateway setup in CI/CD, local dev (`make kind-acpctl-login`), and environments where browser-based OIDC is unavailable.
+
+#### Scenario: Headless OIDC login
+
+- GIVEN a Keycloak realm at `http://localhost:11880/realms/ambient-code` with user `developer`/`developer`
+- WHEN the user runs `acpctl login --password-grant --username developer --password developer --issuer-url http://localhost:11880/realms/ambient-code --client-id openshell-cli --url http://localhost:13080`
+- THEN an OIDC JWT access token and refresh token are saved to the acpctl config
+- AND subsequent `acpctl gateway setup-cli` commands use the OIDC token for non-interactive registration
+
+#### Scenario: Missing credentials
+
+- WHEN the user runs `acpctl login --password-grant --username developer`
+- THEN the command exits with error: `--username and --password are required with --password-grant`
+
+#### Scenario: Invalid credentials
+
+- GIVEN a valid OIDC issuer
+- WHEN the user runs `acpctl login --password-grant --username wrong --password wrong ...`
+- THEN the command exits with an error from the token endpoint (e.g. `Invalid user credentials`)
 
 ### Requirement: API URL Short Flag
 
@@ -173,3 +285,15 @@ The `acpctl` root command SHALL support `-U` as a short flag alias for `--api-ur
 - GIVEN a valid API server at `https://api.example.com`
 - WHEN the user runs `acpctl -U https://api.example.com get gateways`
 - THEN the command uses `https://api.example.com` as the API server URL
+
+### Requirement: Deterministic Gateway Port-Forwards (Local Dev)
+
+In the local Kind development environment, gateway port-forwards SHALL use deterministic ports based on `KIND_FWD_GATEWAY_BASE_PORT` (default `15080`) with a per-namespace offset.
+
+- Gateways are discovered by label `app.kubernetes.io/instance=openshell-gateway`
+- Namespaces are sorted alphabetically; the first gets port `15080`, the second `15081`, etc.
+- The assigned port is written to `$(KIND_PF_DIR)/kind-pf-openshell-<namespace>.port`
+- Status checks, access printout, and cleanup targets read from `.port` files (not log scraping)
+- `make kind-port-forward-stop` removes `.pid`, `.log`, and `.port` files
+
+This replaces the previous ephemeral port allocation where ports were discovered by parsing `kubectl port-forward` log output.
