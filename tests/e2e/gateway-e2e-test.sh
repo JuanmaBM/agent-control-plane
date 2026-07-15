@@ -147,6 +147,25 @@ fail() { echo -e "  ${RED}✗${NC} $1"; FAILED=$((FAILED + 1)); }
 skip() { echo -e "  ${YELLOW}⊘${NC} $1 (skipped: $2)"; }
 section() { echo ""; echo -e "${BOLD}$1${NC}"; }
 
+_delete_session() {
+  local sid="$1"
+  [ -z "$sid" ] && return 0
+  if [ "$SKIP_CLEANUP" = "true" ]; then return 0; fi
+  api DELETE "/api/ambient/v1/sessions/${sid}" >/dev/null 2>&1 && \
+    echo "  Deleted session ${sid}" || true
+  local pod="session-$(echo "${sid:0:40}" | tr '[:upper:]' '[:lower:]')"
+  for _i in $(seq 1 15); do
+    kubectl get pod "$pod" -n "$TENANT" &>/dev/null || break
+    sleep 2
+  done
+}
+
+_cleanup_sandboxes() {
+  if [ "$SKIP_CLEANUP" = "true" ]; then return 0; fi
+  openshell sandbox delete --all --gateway "$TENANT" >/dev/null 2>&1 && \
+    echo "  Cleaned up sandboxes on gateway ${TENANT}" || true
+}
+
 api() {
   local method="$1" path="$2"
   shift 2
@@ -363,6 +382,16 @@ if [ "${CONTROLLER_READY:-0}" -ge 1 ]; then
   pass "agent-sandbox controller ready"
 else
   fail "agent-sandbox controller not ready"
+fi
+
+# Register the gateway with the openshell CLI early so _cleanup_sandboxes works
+# throughout the test. Section 13 will re-check and refresh if needed.
+if command -v openshell &>/dev/null; then
+  if _ensure_gateway_port_forward; then
+    pass "openshell CLI gateway '${TENANT}' registered"
+  else
+    skip "openshell CLI gateway registration" "will retry in section 13"
+  fi
 fi
 
 section "9. Start agent session"
@@ -614,6 +643,9 @@ else
   skip "Mock LLM response verification" "session not running or not created"
 fi
 
+_delete_session "$CREATED_SESSION_ID"
+_cleanup_sandboxes
+
 section "12. Repository payload verification"
 
 REPO_SESSION_ID=""
@@ -630,6 +662,31 @@ if ! _ensure_gateway_port_forward; then
   fail "Gateway port-forward could not be established — openshell CLI missing or gateway unreachable"
   echo -e "\n${BOLD}Results: ${GREEN}${PASSED} passed${NC}, ${RED}${FAILED} failed${NC}\n"
   exit 1
+fi
+
+# Wait for gateway pod to be fully ready — the reconciler may have restarted
+# the StatefulSet during sections 9-11 (DNS or config change detection).
+GW_READY_FOR_NET=false
+for _i in $(seq 1 30); do
+  _gw_phase=$(kubectl get pod openshell-gateway-0 -n "$TENANT" \
+    -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+  _gw_ready=$(kubectl get pod openshell-gateway-0 -n "$TENANT" \
+    -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || echo "")
+  if [ "$_gw_phase" = "Running" ] && [ "$_gw_ready" = "true" ]; then
+    GW_READY_FOR_NET=true
+    break
+  fi
+  sleep 2
+done
+
+if [ "$GW_READY_FOR_NET" = "true" ]; then
+  pass "Gateway pod ready for network policy tests"
+  # Re-establish port-forward if gateway restarted (old PF would be stale)
+  if ! openshell sandbox list --gateway "${TENANT}" &>/dev/null 2>&1; then
+    _ensure_gateway_port_forward || true
+  fi
+else
+  fail "Gateway pod not ready after 60s — network tests may fail"
 fi
 
 # Policies were already applied in section 6; only the test-specific agents
@@ -715,6 +772,21 @@ else
   fail "Agent 'network-test-locked-down' not found after apply"
 fi
 
+_delete_session "$LOCKED_SESSION_ID"
+_cleanup_sandboxes
+
+# Brief gateway readiness check — cleanup may coincide with a reconciler restart
+for _i in $(seq 1 15); do
+  _gw_ready=$(kubectl get pod openshell-gateway-0 -n "$TENANT" \
+    -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || echo "")
+  [ "$_gw_ready" = "true" ] && break
+  sleep 2
+done
+# Re-check CLI connectivity after potential gateway restart
+if ! openshell sandbox list --gateway "${TENANT}" &>/dev/null 2>&1; then
+  _ensure_gateway_port_forward || true
+fi
+
 # Verify permissive policy allows external network access.
 # Start a dedicated permissive session and curl update.code.visualstudio.com
 # via the sandbox proxy. The request should succeed (not return policy_denied).
@@ -792,6 +864,9 @@ else
   fail "Agent 'network-test-permissive' not found after apply"
 fi
 
+_delete_session "$PERM_SESSION_ID"
+_cleanup_sandboxes
+
 section "Cleanup"
 
 if [ "$SKIP_CLEANUP" = "true" ]; then
@@ -807,26 +882,12 @@ if [ "$SKIP_CLEANUP" = "true" ]; then
     fi
   done
 else
-  if [ -n "$CREATED_SESSION_ID" ]; then
-    api DELETE "/api/ambient/v1/sessions/${CREATED_SESSION_ID}" >/dev/null 2>&1 && \
-      echo "  Deleted session ${CREATED_SESSION_ID}" || \
-      echo "  Could not delete session (non-fatal)"
-  fi
-  if [ -n "$REPO_SESSION_ID" ]; then
-    api DELETE "/api/ambient/v1/sessions/${REPO_SESSION_ID}" >/dev/null 2>&1 && \
-      echo "  Deleted repo session ${REPO_SESSION_ID}" || \
-      echo "  Could not delete repo session (non-fatal)"
-  fi
-  if [ -n "$LOCKED_SESSION_ID" ]; then
-    api DELETE "/api/ambient/v1/sessions/${LOCKED_SESSION_ID}" >/dev/null 2>&1 && \
-      echo "  Deleted locked-down session ${LOCKED_SESSION_ID}" || \
-      echo "  Could not delete locked-down session (non-fatal)"
-  fi
-  if [ -n "${PERM_SESSION_ID:-}" ]; then
-    api DELETE "/api/ambient/v1/sessions/${PERM_SESSION_ID}" >/dev/null 2>&1 && \
-      echo "  Deleted permissive session ${PERM_SESSION_ID}" || \
-      echo "  Could not delete permissive session (non-fatal)"
-  fi
+  for _sid in "$CREATED_SESSION_ID" "$REPO_SESSION_ID" "$LOCKED_SESSION_ID" "${PERM_SESSION_ID:-}"; do
+    [ -z "$_sid" ] && continue
+    api DELETE "/api/ambient/v1/sessions/${_sid}" >/dev/null 2>&1 && \
+      echo "  Deleted session ${_sid}" || \
+      echo "  Could not delete session ${_sid} (non-fatal)"
+  done
 fi
 
 echo ""
