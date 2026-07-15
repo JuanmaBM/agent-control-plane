@@ -443,7 +443,7 @@ func setupOpenshellGateway(w io.Writer, gw *sdktypes.Gateway, cfg *config.Config
 		if !alreadyRegistered {
 			cleanupGatewayConfig(localName)
 		}
-		return fmt.Errorf("gateway at %s is not reachable: %w\nCheck that the URL is correct and the gateway is running.", gwURL, err)
+		return fmt.Errorf("gateway at %s is not reachable: %w", gwURL, err)
 	}
 
 	fmt.Fprintf(w, "Gateway %s configured and verified\n", localName)
