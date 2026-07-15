@@ -45,6 +45,7 @@ export function CreateSessionSheet({
   const [temperature, setTemperature] = useState('')
   const [maxTokens, setMaxTokens] = useState('')
   const [timeout, setTimeout] = useState('')
+  const [stopOnRunFinished, setStopOnRunFinished] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const agents = agentsData?.items ?? []
@@ -58,6 +59,7 @@ export function CreateSessionSheet({
     setTemperature('')
     setMaxTokens('')
     setTimeout('')
+    setStopOnRunFinished(true)
     setError(null)
   }
 
@@ -82,6 +84,8 @@ export function CreateSessionSheet({
     }
     if (prompt.trim()) request.prompt = prompt.trim()
     if (model) request.model = model
+
+    request.stopOnRunFinished = stopOnRunFinished
 
     if (showAdvanced) {
       const tempVal = parseFloat(temperature)
@@ -178,6 +182,17 @@ export function CreateSessionSheet({
             <p className="text-xs text-muted-foreground">
               Overrides the agent&apos;s configured default model
             </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="session-stop-on-finish"
+              checked={stopOnRunFinished}
+              onChange={e => setStopOnRunFinished(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300"
+            />
+            <label htmlFor="session-stop-on-finish" className="text-sm font-medium">Stop sandbox on run finished</label>
           </div>
 
           <button

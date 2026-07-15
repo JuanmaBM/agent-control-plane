@@ -51,6 +51,7 @@ class Session:
     sdk_restart_count: int = 0
     sdk_session_id: str = ""
     source_scheduled_session_id: str = ""
+    stop_on_run_finished: Optional[bool] = None
     start_time: Optional[datetime] = None
     timeout: int = 0
     workflow_id: str = ""
@@ -95,6 +96,7 @@ class Session:
             sdk_restart_count=data.get("sdk_restart_count", 0),
             sdk_session_id=data.get("sdk_session_id", ""),
             source_scheduled_session_id=data.get("source_scheduled_session_id", ""),
+            stop_on_run_finished=data.get("stop_on_run_finished"),
             start_time=_parse_datetime(data.get("start_time")),
             timeout=data.get("timeout", 0),
             workflow_id=data.get("workflow_id", ""),
@@ -193,6 +195,10 @@ class SessionBuilder:
         self._data["resource_overrides"] = value
         return self
 
+    def stop_on_run_finished(self, value: bool) -> SessionBuilder:
+        self._data["stop_on_run_finished"] = value
+        return self
+
     def timeout(self, value: int) -> SessionBuilder:
         self._data["timeout"] = value
         return self
@@ -266,6 +272,10 @@ class SessionPatch:
 
     def resource_overrides(self, value: str) -> SessionPatch:
         self._data["resource_overrides"] = value
+        return self
+
+    def stop_on_run_finished(self, value: bool) -> SessionPatch:
+        self._data["stop_on_run_finished"] = value
         return self
 
     def timeout(self, value: int) -> SessionPatch:

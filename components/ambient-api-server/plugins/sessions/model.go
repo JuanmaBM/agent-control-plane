@@ -23,6 +23,7 @@ type Session struct {
 	LlmMaxTokens             *int32     `json:"llm_max_tokens"`
 	ParentSessionId          *string    `json:"parent_session_id"`
 	SourceScheduledSessionId *string    `json:"source_scheduled_session_id,omitempty"`
+	StopOnRunFinished        *bool      `json:"stop_on_run_finished,omitempty"`
 	ScheduledFor             *time.Time `json:"scheduled_for,omitempty"`
 	BotAccountName           *string    `json:"bot_account_name"`
 	ResourceOverrides        *string    `json:"resource_overrides"`
@@ -96,6 +97,7 @@ type SessionPatchRequest struct {
 	EnvironmentVariables *string  `json:"environment_variables,omitempty"`
 	SessionLabels        *string  `json:"labels,omitempty"`
 	SessionAnnotations   *string  `json:"annotations,omitempty"`
+	StopOnRunFinished    *bool    `json:"stop_on_run_finished,omitempty"`
 }
 
 type SessionStatusPatchRequest struct {
