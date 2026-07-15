@@ -394,7 +394,7 @@ if command -v openshell &>/dev/null; then
   fi
 fi
 
-section "9. Start agent session"
+section "9. Start agent session (long-running)"
 
 START_RESP=$(api POST "/api/ambient/v1/projects/${PROJECT_ID}/agents/${AGENT_ID}/start" \
   -d '{"prompt": "gateway-e2e-test: say hello"}' || echo "")
@@ -573,7 +573,7 @@ else
   fail "Sandbox configuration verification — session not created"
 fi
 
-section "11. Mock LLM response verification via acpctl"
+section "11. Long-running session: LLM response and sandbox persistence"
 
 if [ -n "$CREATED_SESSION_ID" ] && [ "${SESSION_RUNNING:-false}" = "true" ]; then
   # Poll acpctl session messages until we see an assistant response (up to 180s).
@@ -639,19 +639,142 @@ if [ -n "$CREATED_SESSION_ID" ] && [ "${SESSION_RUNNING:-false}" = "true" ]; the
   else
     skip "Mock LLM echo content" "response text not found — may be in a different event format"
   fi
+
+  # 11d. Long-running session — sandbox remains alive after LLM response.
+  # When stop_on_run_finished is false (the default), the session stays Running
+  # and the sandbox pod stays up after the runner exec stream finishes.
+  # Poll every 10s for 2 minutes to confirm neither the session nor the sandbox
+  # is being torn down. A single check after a short sleep is unreliable because
+  # deprovisioning can take up to ~2 minutes to kick in.
+  LONGRUN_STABLE=true
+  LONGRUN_FAIL_REASON=""
+  for i in $(seq 1 12); do
+    sleep 10
+    LONGRUN_PHASE=$(api GET "/api/ambient/v1/sessions/${CREATED_SESSION_ID}" 2>/dev/null \
+      | jq -r '.phase // empty' 2>/dev/null || echo "")
+    LONGRUN_POD_PHASE=$(kubectl get pod "${SBX_NAME}" -n "$TENANT" \
+      -o jsonpath='{.status.phase}' 2>/dev/null || echo "gone")
+
+    if [ "$LONGRUN_PHASE" != "Running" ]; then
+      LONGRUN_STABLE=false
+      LONGRUN_FAIL_REASON="session phase changed to '${LONGRUN_PHASE}' after $((i * 10))s"
+      break
+    fi
+    if [ "$LONGRUN_POD_PHASE" != "Running" ]; then
+      LONGRUN_STABLE=false
+      LONGRUN_FAIL_REASON="sandbox pod phase changed to '${LONGRUN_POD_PHASE}' after $((i * 10))s"
+      break
+    fi
+  done
+
+  if [ "$LONGRUN_STABLE" = "true" ]; then
+    pass "Long-running session and sandbox remained Running for 120s after LLM response"
+  else
+    fail "Long-running sandbox was torn down: ${LONGRUN_FAIL_REASON}"
+  fi
 else
-  skip "Mock LLM response verification" "session not running or not created"
+  skip "Long-running session verification" "session not running or not created"
 fi
 
 _delete_session "$CREATED_SESSION_ID"
 _cleanup_sandboxes
 
-section "12. Repository payload verification"
+section "12. Short-running session lifecycle (stop_on_run_finished)"
+
+# Start a new session for the same agent and PATCH it with stop_on_run_finished=true.
+# When the runner exec finishes, the control plane should mark the session as Completed
+# and the sandbox should be deprovisioned automatically.
+
+SHORT_SESSION_ID=""
+SHORT_START_RESP=$(api POST "/api/ambient/v1/projects/${PROJECT_ID}/agents/${AGENT_ID}/start" \
+  -d '{"prompt": "gateway-e2e-test: short-running session"}' || echo "")
+
+SHORT_SESSION_ID=$(echo "$SHORT_START_RESP" \
+  | jq -r '.session.id // empty' 2>/dev/null || echo "")
+
+if [ -n "$SHORT_SESSION_ID" ]; then
+  pass "Short-running session started (id: ${SHORT_SESSION_ID})"
+
+  PATCH_RESP=$(api PATCH "/api/ambient/v1/sessions/${SHORT_SESSION_ID}" \
+    -d '{"stop_on_run_finished": true}' || echo "")
+  PATCHED_FLAG=$(echo "$PATCH_RESP" | jq -r '.stop_on_run_finished // empty' 2>/dev/null || echo "")
+  if [ "$PATCHED_FLAG" = "true" ]; then
+    pass "stop_on_run_finished set to true"
+  else
+    fail "Could not set stop_on_run_finished (got: '${PATCHED_FLAG}')"
+  fi
+
+  SHORT_SBX_NAME="session-$(echo "${SHORT_SESSION_ID:0:40}" | tr '[:upper:]' '[:lower:]')"
+
+  # Wait for LLM response (same polling as long-running)
+  SHORT_LLM_FOUND=0
+  for i in $(seq 1 90); do
+    SHORT_MESSAGES=$($ACPCTL session messages "$SHORT_SESSION_ID" -o json 2>/dev/null || echo "[]")
+    SHORT_LLM_FOUND=$(echo "$SHORT_MESSAGES" \
+      | jq -r '[.[] | select(.event_type == "assistant" or .event_type == "TEXT_MESSAGE_CONTENT" or .event_type == "MESSAGES_SNAPSHOT")] | length' 2>/dev/null || echo "0")
+    if [ "${SHORT_LLM_FOUND}" -gt 0 ]; then
+      break
+    fi
+    sleep 2
+  done
+
+  if [ "${SHORT_LLM_FOUND}" -gt 0 ]; then
+    pass "Short-running session received LLM response"
+  else
+    fail "Short-running session did not receive LLM response after 180s"
+  fi
+
+  # After the runner finishes with stop_on_run_finished=true, the control plane
+  # marks the session as Completed and deprovisions the sandbox.
+  SHORT_COMPLETED=false
+  for i in $(seq 1 60); do
+    SHORT_PHASE=$(api GET "/api/ambient/v1/sessions/${SHORT_SESSION_ID}" 2>/dev/null \
+      | jq -r '.phase // empty' 2>/dev/null || echo "")
+    if [ "$SHORT_PHASE" = "Completed" ] || [ "$SHORT_PHASE" = "Succeeded" ]; then
+      SHORT_COMPLETED=true
+      break
+    fi
+    sleep 2
+  done
+
+  if [ "$SHORT_COMPLETED" = "true" ]; then
+    pass "Short-running session transitioned to ${SHORT_PHASE}"
+  else
+    fail "Short-running session phase is '${SHORT_PHASE}' (expected Completed)"
+  fi
+
+  # Verify sandbox pod is terminated after session completion (up to 120s).
+  # The sandbox controller may take up to ~2 minutes to fully deprovision.
+  SHORT_SBX_GONE=false
+  for i in $(seq 1 60); do
+    SHORT_POD_PHASE=$(kubectl get pod "$SHORT_SBX_NAME" -n "$TENANT" \
+      -o jsonpath='{.status.phase}' 2>/dev/null || echo "gone")
+    if [ "$SHORT_POD_PHASE" = "gone" ] || [ "$SHORT_POD_PHASE" = "Succeeded" ] || [ "$SHORT_POD_PHASE" = "Failed" ]; then
+      SHORT_SBX_GONE=true
+      break
+    fi
+    sleep 2
+  done
+
+  if [ "$SHORT_SBX_GONE" = "true" ]; then
+    pass "Short-running sandbox terminated after session completion"
+  else
+    fail "Short-running sandbox pod still running (phase: ${SHORT_POD_PHASE})"
+  fi
+else
+  fail "Failed to start short-running session"
+  echo "  Response: $(echo "$SHORT_START_RESP" | head -c 200)"
+fi
+
+_delete_session "$SHORT_SESSION_ID"
+_cleanup_sandboxes
+
+section "13. Repository payload verification"
 
 REPO_SESSION_ID=""
 skip "Repo payload verification" "vertex provider not available in CI"
 
-section "13. Network policy enforcement"
+section "14. Network policy enforcement"
 
 LOCKED_SESSION_ID=""
 PERM_SESSION_ID=""
@@ -871,7 +994,7 @@ section "Cleanup"
 
 if [ "$SKIP_CLEANUP" = "true" ]; then
   echo -e "  ${YELLOW}Skipping cleanup (--skip-cleanup)${NC}"
-  for _sid in "$CREATED_SESSION_ID" "$REPO_SESSION_ID" "$LOCKED_SESSION_ID" "${PERM_SESSION_ID:-}"; do
+  for _sid in "$CREATED_SESSION_ID" "$REPO_SESSION_ID" "${SHORT_SESSION_ID:-}" "$LOCKED_SESSION_ID" "${PERM_SESSION_ID:-}"; do
     [ -z "$_sid" ] && continue
     _pod="session-$(echo "${_sid:0:40}" | tr '[:upper:]' '[:lower:]')"
     _phase=$(kubectl get pod "$_pod" -n "$TENANT" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
@@ -882,7 +1005,7 @@ if [ "$SKIP_CLEANUP" = "true" ]; then
     fi
   done
 else
-  for _sid in "$CREATED_SESSION_ID" "$REPO_SESSION_ID" "$LOCKED_SESSION_ID" "${PERM_SESSION_ID:-}"; do
+  for _sid in "$CREATED_SESSION_ID" "$REPO_SESSION_ID" "${SHORT_SESSION_ID:-}" "$LOCKED_SESSION_ID" "${PERM_SESSION_ID:-}"; do
     [ -z "$_sid" ] && continue
     api DELETE "/api/ambient/v1/sessions/${_sid}" >/dev/null 2>&1 && \
       echo "  Deleted session ${_sid}" || \
