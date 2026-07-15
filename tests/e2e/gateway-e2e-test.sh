@@ -15,9 +15,11 @@
 #   - TEST_TOKEN set or tests/cypress/.env.test present
 #
 # Usage:
-#   ./tests/e2e/gateway-e2e-test.sh [--skip-cleanup] [API_URL]
+#   ./tests/e2e/gateway-e2e-test.sh [--skip-cleanup] [--test PATTERN] [API_URL]
 #   API_URL defaults to http://localhost:13000
 #   --skip-cleanup  Retain created sessions for manual inspection
+#   --test NAME     Run only the test matching NAME (short underscore name)
+#                   Available: long_running, short_running, repo_payload, network_policy
 
 set -euo pipefail
 
@@ -27,11 +29,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NAMESPACE="${NAMESPACE:-ambient-code}"
 TENANT="tenant-a"
 SKIP_CLEANUP=false
+TEST_FILTER=""
 
 # Parse flags
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
     --skip-cleanup) SKIP_CLEANUP=true; shift ;;
+    --test) TEST_FILTER="${2:?--test requires a PATTERN argument}"; shift 2 ;;
     *) echo "Unknown flag: $1"; exit 1 ;;
   esac
 done
@@ -146,6 +150,12 @@ pass() { echo -e "  ${GREEN}✓${NC} $1"; PASSED=$((PASSED + 1)); }
 fail() { echo -e "  ${RED}✗${NC} $1"; FAILED=$((FAILED + 1)); }
 skip() { echo -e "  ${YELLOW}⊘${NC} $1 (skipped: $2)"; }
 section() { echo ""; echo -e "${BOLD}$1${NC}"; }
+
+should_run_test() {
+  local name="$1"
+  [ -z "$TEST_FILTER" ] && return 0
+  [ "$TEST_FILTER" = "$name" ]
+}
 
 _delete_session() {
   local sid="$1"
@@ -394,7 +404,8 @@ if command -v openshell &>/dev/null; then
   fi
 fi
 
-section "9. Start agent session (long-running)"
+if should_run_test "long_running"; then
+section "9. Start agent session (long-running) [long_running]"
 
 START_RESP=$(api POST "/api/ambient/v1/projects/${PROJECT_ID}/agents/${AGENT_ID}/start" \
   -d '{"prompt": "gateway-e2e-test: say hello"}' || echo "")
@@ -678,8 +689,10 @@ fi
 
 _delete_session "$CREATED_SESSION_ID"
 _cleanup_sandboxes
+fi # end long_running
 
-section "12. Short-running session lifecycle (stop_on_run_finished)"
+if should_run_test "short_running"; then
+section "12. Short-running session lifecycle (stop_on_run_finished) [short_running]"
 
 # Start a new session with stop_on_run_finished=true in the request body.
 # The flag must be set at creation time so the sandbox is provisioned with the
@@ -769,13 +782,17 @@ fi
 
 _delete_session "$SHORT_SESSION_ID"
 _cleanup_sandboxes
+fi # end short_running
 
-section "13. Repository payload verification"
+if should_run_test "repo_payload"; then
+section "13. Repository payload verification [repo_payload]"
 
 REPO_SESSION_ID=""
 skip "Repo payload verification" "vertex provider not available in CI"
+fi # end repo_payload
 
-section "14. Network policy enforcement"
+if should_run_test "network_policy"; then
+section "14. Network policy enforcement [network_policy]"
 
 LOCKED_SESSION_ID=""
 PERM_SESSION_ID=""
@@ -990,6 +1007,7 @@ fi
 
 _delete_session "$PERM_SESSION_ID"
 _cleanup_sandboxes
+fi # end network_policy
 
 section "Cleanup"
 
