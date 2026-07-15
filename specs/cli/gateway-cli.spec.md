@@ -123,17 +123,30 @@ The command operates in one of three modes based on the current state:
 2. Write `metadata.json` to `~/.config/openshell/gateways/<local-name>/` with gateway endpoint, auth mode, and OIDC configuration
 3. Write `oidc_token.json` with the user's acpctl access token and refresh token
 4. Attempt to fetch mTLS certificates from the `openshell-client-tls` K8s secret in the gateway's namespace via `kubectl`, writing `ca.crt`, `tls.crt`, and `tls.key` to `~/.config/openshell/gateways/<local-name>/mtls/`
-5. If mTLS fetch fails, warn the user that `--gateway-insecure` may be needed (non-fatal)
+5. If mTLS fetch fails, warn the user to ensure kubectl access or manually provision certs (non-fatal)
+6. Verify connectivity via `openshell status -g <local-name>` — if the gateway is unreachable, clean up the written config and fail with an error
 
 **Non-interactive re-authentication** (gateway already registered + acpctl credentials available):
 
 1. Refresh the `oidc_token.json` with current acpctl credentials
 2. Attempt to refresh mTLS certificates (non-fatal on failure)
+3. Verify connectivity via `openshell status -g <local-name>`
 
 **Interactive fallback** (no acpctl credentials OR non-OIDC gateway):
 
 1. For new registrations: delegate to `openshell gateway add` with appropriate flags
 2. For re-authentication: delegate to `openshell gateway login`
+3. Verify connectivity via `openshell status -g <local-name>`
+
+#### Connectivity Validation
+
+After all registration or re-authentication paths, the command SHALL run `openshell status -g <local-name>` to verify the gateway is reachable. If the check fails:
+
+- For **new registrations**: the gateway config directory (`~/.config/openshell/gateways/<local-name>/`) is removed so broken state is not left behind
+- For **re-authentication**: the existing config is preserved (the gateway was previously working)
+- The command exits with an error indicating the gateway URL is not reachable
+
+This prevents users from successfully "configuring" a gateway that points to a wrong URL, wrong port, or a gateway that isn't running.
 
 #### mTLS Certificate Handling
 
@@ -185,6 +198,14 @@ When `--print` is specified, the command SHALL print the equivalent openshell co
 - WHEN the user runs `acpctl gateway setup-cli alpha --gateway-url https://gw.example.com:8080`
 - THEN `openshell gateway add` is invoked with OIDC flags
 - AND the browser-based OIDC login flow opens
+
+#### Scenario: Unreachable gateway URL
+
+- GIVEN gateway "alpha" exists in the API server
+- AND the user provides `--gateway-url https://localhost:99999` (nothing listening)
+- WHEN the user runs `acpctl gateway setup-cli alpha --gateway-url https://localhost:99999`
+- THEN the command exits with error: `gateway at https://localhost:99999 is not reachable`
+- AND no gateway config is left in `~/.config/openshell/gateways/`
 
 #### Scenario: openshell not installed
 

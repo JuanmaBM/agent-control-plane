@@ -451,9 +451,34 @@ func setupOpenshellGateway(w io.Writer, gw *sdktypes.Gateway, cfg *config.Config
 		}
 	}
 
-	fmt.Fprintf(w, "Gateway %s configured successfully\n", localName)
+	fmt.Fprintf(w, "Verifying gateway connectivity...\n")
+	if err := verifyGateway(localName); err != nil {
+		if !alreadyRegistered {
+			cleanupGatewayConfig(localName)
+		}
+		return fmt.Errorf("gateway at %s is not reachable: %w\nCheck that the URL is correct and the gateway is running.", gwURL, err)
+	}
+
+	fmt.Fprintf(w, "Gateway %s configured and verified\n", localName)
 	fmt.Fprintf(w, "\nUsage:\n")
 	fmt.Fprintf(w, "  openshell sandbox list --gateway %s\n", localName)
 
 	return nil
+}
+
+func verifyGateway(localName string) error {
+	out, err := exec.Command("openshell", "status", "-g", localName).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(stripANSI(string(out))))
+	}
+	return nil
+}
+
+func cleanupGatewayConfig(localName string) {
+	base := openshellConfigDir()
+	if base == "" {
+		return
+	}
+	gwDir := filepath.Join(base, "gateways", localName)
+	_ = os.RemoveAll(gwDir)
 }

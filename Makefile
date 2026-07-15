@@ -1472,6 +1472,14 @@ kind-status: check-kind ## Show all kind clusters and their port assignments
 	@if [ -n "$(KIND_HOST)" ]; then echo "  Host:     $(KIND_HOST) (remote)"; else echo "  Host:     localhost"; fi
 	@echo "  NodePort: $(KIND_HTTP_PORT) (HTTP) / $(KIND_HTTPS_PORT) (HTTPS)"
 	@echo "  Forward:  $(KIND_FWD_FRONTEND_PORT) (frontend) / $(KIND_FWD_BACKEND_PORT) (backend) / $(KIND_FWD_KEYCLOAK_PORT) (keycloak)"
+	@for PORT_FILE in $(KIND_PF_DIR)/kind-pf-openshell-*.port; do \
+		[ -f "$$PORT_FILE" ] || continue; \
+		NS=$$(basename "$$PORT_FILE" .port | sed 's/^kind-pf-openshell-//'); \
+		PORT=$$(cat "$$PORT_FILE"); \
+		if [ -n "$$PORT" ]; then \
+			echo "  Gateway:  $$PORT ($$NS)"; \
+		fi; \
+	done
 	@echo ""
 	@CLUSTERS=$$($(if $(filter podman,$(CONTAINER_ENGINE)),KIND_EXPERIMENTAL_PROVIDER=podman) kind get clusters 2>/dev/null); \
 	if [ -z "$$CLUSTERS" ]; then \
