@@ -1041,6 +1041,21 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 					return
 				}
 
+				if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
+					phase := "unknown"
+					checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					if current, fetchErr := sdk.Sessions().Get(checkCtx, sessionID); fetchErr == nil {
+						phase = current.Phase
+					}
+					checkCancel()
+					r.logger.Info().
+						Str("sandbox", sbxName).
+						Str("session_id", sessionID).
+						Str("phase", phase).
+						Msg("sandbox not found during exec retry; exiting loop")
+					return
+				}
+
 				r.logger.Warn().Err(err).
 					Str("sandbox", sbxName).
 					Str("session_id", sessionID).
