@@ -36,7 +36,7 @@ export type Session = ObjectReference & {
   sandbox_policy_snapshot: string;
   scheduled_for: string;
   sdk_restart_count: number;
-  stop_on_run_finished: boolean;
+  stop_on_run_finished?: boolean;
   sdk_session_id: string;
   source_scheduled_session_id: string;
   start_time: string;

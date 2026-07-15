@@ -1086,6 +1086,7 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 			}
 
 			completeCtx, completeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer completeCancel()
 			completionTime := time.Now()
 			if _, updateErr := sdk.Sessions().UpdateStatus(completeCtx, sessionID, map[string]interface{}{
 				"phase":           PhaseCompleted,
@@ -1093,7 +1094,6 @@ func (r *SimpleKubeReconciler) execAfterReady(namespace, sbxName, sessionID stri
 			}); updateErr != nil {
 				r.logger.Warn().Err(updateErr).Str("session_id", sessionID).Msg("failed to mark session completed")
 			}
-			completeCancel()
 			return
 		}
 	}

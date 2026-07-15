@@ -13,6 +13,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Select,
   SelectContent,
@@ -185,12 +186,10 @@ export function CreateSessionSheet({
           </div>
 
           <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
+            <Checkbox
               id="session-stop-on-finish"
               checked={stopOnRunFinished}
-              onChange={e => setStopOnRunFinished(e.target.checked)}
-              className="h-4 w-4 rounded border-gray-300"
+              onCheckedChange={(checked) => setStopOnRunFinished(checked === true)}
             />
             <label htmlFor="session-stop-on-finish" className="text-sm font-medium">Stop sandbox on run finished</label>
           </div>
