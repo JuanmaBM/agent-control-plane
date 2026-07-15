@@ -55,11 +55,24 @@ ACP organizes work around a few core concepts:
 
 ```bash
 make kind-up
-make kind-port-forward           # ports shown in output
-make kind-setup-openshell-cli    # optional: port-forward to OpenShell gateways
+make kind-login                  # port-forward services, configure acpctl, print access info
 ```
 
-Once the cluster is running, see [examples/README.md](examples/README.md) to deploy starter agents and vTeam lab environments.
+Once the cluster is running, configure the openshell CLI for a gateway:
+
+```bash
+acpctl gateway setup-cli --project <namespace> --gateway-url https://localhost:<port>
+```
+
+The gateway URL and port are printed by `make kind-login`. If you've already run `setup-cli` before, it will re-authenticate using your existing acpctl credentials instead of re-registering.
+
+To remove a gateway registration:
+
+```bash
+acpctl gateway remove-cli --project <namespace>
+```
+
+See [examples/README.md](examples/README.md) to deploy starter agents and vTeam lab environments.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md#local-development-setup) for full local development setup.
 

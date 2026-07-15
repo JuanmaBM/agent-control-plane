@@ -11,7 +11,8 @@ var Cmd = &cobra.Command{
 	Long: `Manage openshell gateways.
 
 Examples:
-  acpctl gateway setup-cli <name>    # configure openshell CLI access for a gateway`,
+  acpctl gateway setup-cli     # configure openshell CLI access for a gateway
+  acpctl gateway remove-cli    # remove an openshell CLI gateway registration`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	},
@@ -19,4 +20,5 @@ Examples:
 
 func init() {
 	Cmd.AddCommand(setupCmd)
+	Cmd.AddCommand(removeCmd)
 }

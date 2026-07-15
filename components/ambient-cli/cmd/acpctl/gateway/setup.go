@@ -4,13 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/ambient-code/platform/components/ambient-cli/pkg/config"
 	"github.com/ambient-code/platform/components/ambient-cli/pkg/connection"
@@ -20,22 +20,67 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var setupArgs struct {
+	gatewayURL string
+	project    string
+	printOnly  bool
+}
+
 var setupCmd = &cobra.Command{
-	Use:   "setup-cli <name>",
+	Use:   "setup-cli [name]",
 	Short: "Configure openshell CLI access for a gateway",
 	Long: `Configure local openshell CLI access for a named gateway.
 
-Extracts mTLS certificates from the cluster, starts a kubectl port-forward,
-and registers the gateway with the openshell CLI.
+Reads the gateway's authentication configuration from the API server
+and registers it with the openshell CLI. For OIDC-enabled gateways,
+the user's existing acpctl credentials are used to configure openshell
+non-interactively. If no acpctl credentials are available, the
+interactive browser-based OIDC flow is used instead.
 
-Requires kubectl and openshell to be installed and a valid kubeconfig context.`,
-	Example: "  acpctl gateway setup-cli my-gateway",
-	Args:    cobra.ExactArgs(1),
-	RunE:    runSetup,
+If the gateway was previously registered, re-authenticates using the
+existing registration instead of creating a new one.
+
+The API-side gateway name defaults to "openshell-gateway" if not specified.
+The local openshell registration is named "<project>-openshell-gateway",
+with a numeric suffix added if a new registration is needed and the name
+is already taken.
+
+Use --print to show the openshell commands instead of running them.
+
+Requires openshell to be installed.`,
+	Example: `  acpctl gateway setup-cli --gateway-url https://localhost:54684 --project tenant-a
+  acpctl gateway setup-cli my-gateway --gateway-url https://gateway.example.com:8080
+  acpctl gateway setup-cli --gateway-url https://localhost:54684 --project tenant-a --print`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runSetup,
+}
+
+func init() {
+	setupCmd.Flags().StringVar(&setupArgs.gatewayURL, "gateway-url", "", "Gateway URL (e.g. https://gateway.example.com:8080)")
+	setupCmd.Flags().StringVar(&setupArgs.project, "project", "", "Project/namespace to look up the gateway in (defaults to configured project)")
+	setupCmd.Flags().BoolVar(&setupArgs.printOnly, "print", false, "Print the openshell commands instead of running them")
+	_ = setupCmd.MarkFlagRequired("gateway-url")
 }
 
 func runSetup(cmd *cobra.Command, args []string) error {
-	client, err := connection.NewClientFromConfig()
+	factory, err := connection.NewClientFactory()
+	if err != nil {
+		return err
+	}
+
+	project := setupArgs.project
+	if project == "" {
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		project = cfg.GetProject()
+		if project == "" {
+			return fmt.Errorf("no project set; use --project or run 'acpctl config set project <name>'")
+		}
+	}
+
+	client, err := factory.ForProject(project)
 	if err != nil {
 		return err
 	}
@@ -48,10 +93,17 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.GetRequestTimeout())
 	defer cancel()
 
-	gw, err := findGateway(ctx, client, args[0])
+	apiGWName := "openshell-gateway"
+	if len(args) > 0 {
+		apiGWName = args[0]
+	}
+
+	gw, err := findGateway(ctx, client, apiGWName)
 	if err != nil {
 		return err
 	}
+
+	localName := resolveLocalName(project, apiGWName)
 
 	format, err := output.ParseFormat("")
 	if err != nil {
@@ -59,7 +111,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	}
 	printer := output.NewPrinter(format, cmd.OutOrStdout())
 
-	return setupOpenshellGateway(printer.Writer(), gw)
+	return setupOpenshellGateway(printer.Writer(), gw, cfg, localName, setupArgs.gatewayURL, project, setupArgs.printOnly)
 }
 
 func findGateway(ctx context.Context, client *sdkclient.Client, nameOrID string) (*sdktypes.Gateway, error) {
@@ -89,148 +141,319 @@ func findGateway(ctx context.Context, client *sdkclient.Client, nameOrID string)
 	return nil, fmt.Errorf("gateway %q not found", nameOrID)
 }
 
-// TODO: once gateway access via Route/Ingress is supported, use that instead of kubectl port-forward
-func setupOpenshellGateway(w io.Writer, gw *sdktypes.Gateway) error {
-	namespace := strings.ToLower(gw.ProjectID)
-	gwName := gw.Name
-
-	if _, err := exec.LookPath("kubectl"); err != nil {
-		return fmt.Errorf("kubectl not found in PATH: required for gateway setup")
+func stripANSI(s string) string {
+	var out strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && ((s[j] >= '0' && s[j] <= '9') || s[j] == ';') {
+				j++
+			}
+			if j < len(s) {
+				j++
+			}
+			i = j
+			continue
+		}
+		out.WriteByte(s[i])
+		i++
 	}
+	return out.String()
+}
+
+func listOpenshellGateways() map[string]bool {
+	names := make(map[string]bool)
+	out, err := exec.Command("openshell", "gateway", "list").Output()
+	if err != nil {
+		return names
+	}
+	scanner := bufio.NewScanner(strings.NewReader(stripANSI(string(out))))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 0 {
+			continue
+		}
+		name := fields[0]
+		if name == "*" && len(fields) > 1 {
+			name = fields[1]
+		}
+		if strings.ToUpper(name) == "NAME" {
+			continue
+		}
+		names[name] = true
+	}
+	return names
+}
+
+func openshellConfigDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "openshell")
+}
+
+func gatewayRegistered(localName string) bool {
+	return listOpenshellGateways()[localName]
+}
+
+func resolveLocalName(project, apiGWName string) string {
+	base := project + "-" + apiGWName
+	existing := listOpenshellGateways()
+	if existing[base] {
+		return base
+	}
+	if !existing[base] {
+		return base
+	}
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if !existing[candidate] {
+			return candidate
+		}
+	}
+}
+
+func isLocalURL(url string) bool {
+	return strings.Contains(url, "localhost") || strings.Contains(url, "127.0.0.1")
+}
+
+func buildAddArgs(localName, gwURL string, oidc *sdktypes.GatewayOidc) []string {
+	args := []string{"gateway", "add", "--name", localName}
+	if oidc != nil && oidc.Issuer != "" {
+		args = append(args,
+			"--oidc-issuer", oidc.Issuer,
+			"--oidc-client-id", oidc.Audience,
+			"--oidc-audience", oidc.Audience,
+		)
+	}
+	if isLocalURL(gwURL) {
+		args = append(args, "--gateway-insecure")
+	}
+	args = append(args, gwURL)
+	return args
+}
+
+func buildLoginArgs(localName, gwURL string) []string {
+	args := []string{"gateway", "login", "-g", localName}
+	if isLocalURL(gwURL) {
+		args = append(args, "--gateway-insecure")
+	}
+	return args
+}
+
+type gatewayMetadata struct {
+	Name            string `json:"name"`
+	GatewayEndpoint string `json:"gateway_endpoint"`
+	IsRemote        bool   `json:"is_remote"`
+	GatewayPort     int    `json:"gateway_port"`
+	AuthMode        string `json:"auth_mode"`
+	OIDCIssuer      string `json:"oidc_issuer,omitempty"`
+	OIDCClientID    string `json:"oidc_client_id,omitempty"`
+	OIDCAudience    string `json:"oidc_audience,omitempty"`
+}
+
+type oidcTokenFile struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresAt    int64  `json:"expires_at,omitempty"`
+	Issuer       string `json:"issuer"`
+	ClientID     string `json:"client_id"`
+}
+
+// fetchClientTLS retrieves the openshell-client-tls secret from the
+// gateway's namespace and writes ca.crt, tls.crt, and tls.key to the
+// local openshell config. This lets openshell verify the gateway's TLS
+// cert and perform mTLS client auth without --gateway-insecure.
+func fetchClientTLS(localName, namespace string) error {
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		return fmt.Errorf("kubectl not found in PATH")
+	}
+
+	base := openshellConfigDir()
+	if base == "" {
+		return fmt.Errorf("cannot determine home directory")
+	}
+
+	mtlsDir := filepath.Join(base, "gateways", localName, "mtls")
+	if err := os.MkdirAll(mtlsDir, 0700); err != nil {
+		return fmt.Errorf("create mtls dir: %w", err)
+	}
+
+	secretName := "openshell-client-tls"
+	files := []struct {
+		field string
+		name  string
+		perm  os.FileMode
+	}{
+		{"ca\\.crt", "ca.crt", 0644},
+		{"tls\\.crt", "tls.crt", 0644},
+		{"tls\\.key", "tls.key", 0600},
+	}
+
+	for _, f := range files {
+		out, err := exec.Command("kubectl", "get", "secret", secretName,
+			"-n", namespace,
+			"-o", fmt.Sprintf("jsonpath={.data.%s}", f.field),
+		).Output()
+		if err != nil {
+			return fmt.Errorf("fetch %s from %s/%s: %w", f.name, namespace, secretName, err)
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(string(out))
+		if err != nil {
+			return fmt.Errorf("decode %s: %w", f.name, err)
+		}
+
+		if err := os.WriteFile(filepath.Join(mtlsDir, f.name), decoded, f.perm); err != nil {
+			return fmt.Errorf("write %s: %w", f.name, err)
+		}
+	}
+	return nil
+}
+
+func writeGatewayConfig(localName, gwURL string, oidc *sdktypes.GatewayOidc) error {
+	base := openshellConfigDir()
+	if base == "" {
+		return fmt.Errorf("cannot determine home directory")
+	}
+
+	gwDir := filepath.Join(base, "gateways", localName)
+	if err := os.MkdirAll(gwDir, 0700); err != nil {
+		return fmt.Errorf("create gateway dir: %w", err)
+	}
+
+	meta := &gatewayMetadata{
+		Name:            localName,
+		GatewayEndpoint: gwURL,
+		IsRemote:        true,
+		GatewayPort:     0,
+		AuthMode:        "oidc",
+	}
+	if oidc != nil {
+		meta.OIDCIssuer = oidc.Issuer
+		meta.OIDCClientID = oidc.Audience
+		meta.OIDCAudience = oidc.Audience
+	}
+
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal metadata: %w", err)
+	}
+
+	return os.WriteFile(filepath.Join(gwDir, "metadata.json"), data, 0600)
+}
+
+func writeOIDCToken(localName string, cfg *config.Config, gwOidc *sdktypes.GatewayOidc) error {
+	accessToken := cfg.GetToken()
+	if accessToken == "" {
+		return fmt.Errorf("no access token in acpctl config; run 'acpctl login' first")
+	}
+
+	token := &oidcTokenFile{
+		AccessToken:  accessToken,
+		RefreshToken: cfg.RefreshToken,
+		Issuer:       gwOidc.Issuer,
+		ClientID:     gwOidc.Audience,
+	}
+
+	base := openshellConfigDir()
+	if base == "" {
+		return fmt.Errorf("cannot determine home directory")
+	}
+
+	tokenPath := filepath.Join(base, "gateways", localName, "oidc_token.json")
+
+	if err := os.MkdirAll(filepath.Dir(tokenPath), 0700); err != nil {
+		return fmt.Errorf("create token dir: %w", err)
+	}
+
+	data, err := json.MarshalIndent(token, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal token: %w", err)
+	}
+
+	return os.WriteFile(tokenPath, data, 0600)
+}
+
+func hasACPCredentials(cfg *config.Config) bool {
+	return cfg.GetToken() != ""
+}
+
+func setupOpenshellGateway(w io.Writer, gw *sdktypes.Gateway, cfg *config.Config, localName, gwURL, namespace string, printOnly bool) error {
 	if _, err := exec.LookPath("openshell"); err != nil {
 		return fmt.Errorf("openshell not found in PATH: required for gateway setup")
 	}
 
-	if !kubectlNamespaceExists(namespace) {
-		return fmt.Errorf("namespace %q does not exist in the cluster", namespace)
+	gwURL = strings.TrimRight(gwURL, "/")
+	alreadyRegistered := gatewayRegistered(localName)
+	hasOIDC := gw.Oidc != nil && gw.Oidc.Issuer != ""
+	hasCreds := hasACPCredentials(cfg)
+
+	if printOnly {
+		addArgs := buildAddArgs(localName, gwURL, gw.Oidc)
+		loginArgs := buildLoginArgs(localName, gwURL)
+
+		fmt.Fprintf(w, "# Register a new gateway\n")
+		fmt.Fprintf(w, "  openshell %s\n", strings.Join(addArgs, " "))
+		fmt.Fprintf(w, "\n# Re-authenticate an existing gateway\n")
+		fmt.Fprintf(w, "  openshell %s\n", strings.Join(loginArgs, " "))
+		fmt.Fprintf(w, "\n# Verify connectivity\n")
+		fmt.Fprintf(w, "  openshell -g %s provider list\n", localName)
+		return nil
 	}
 
-	if !kubectlSecretExists(namespace, "openshell-server-tls") {
-		return fmt.Errorf("openshell-server-tls secret not found in namespace %q; gateway may not be fully provisioned", namespace)
-	}
-
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("get home directory: %w", err)
-	}
-	certDir := filepath.Join(homeDir, ".config", "openshell", "gateways", gwName, "mtls")
-	if err := os.MkdirAll(certDir, 0700); err != nil {
-		return fmt.Errorf("create cert directory: %w", err)
-	}
-
-	fmt.Fprintf(w, "Extracting mTLS certs from openshell-server-tls...\n")
-	for _, key := range []string{"ca.crt", "tls.crt", "tls.key"} {
-		if err := extractSecretKey(namespace, "openshell-server-tls", key, filepath.Join(certDir, key)); err != nil {
-			return fmt.Errorf("extract %s: %w", key, err)
-		}
-	}
-
-	fmt.Fprintf(w, "Starting port-forward to openshell-gateway in %s...\n", namespace)
-	pfCmd := exec.Command("kubectl", "port-forward", "-n", namespace,
-		"statefulset/openshell-gateway", ":8080")
-	pfCmd.Stderr = os.Stderr
-	pfOut, err := pfCmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("create port-forward pipe: %w", err)
-	}
-	if err := pfCmd.Start(); err != nil {
-		return fmt.Errorf("start port-forward: %w", err)
-	}
-	defer func() {
-		_ = pfCmd.Process.Kill()
-		_ = pfCmd.Wait()
-	}()
-
-	port := ""
-	scanner := bufio.NewScanner(pfOut)
-	portCh := make(chan string, 1)
-	pfCtx, pfCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer pfCancel()
-	go func() {
-		defer pfCancel()
-		for scanner.Scan() {
-			line := scanner.Text()
-			if idx := strings.Index(line, "Forwarding from 127.0.0.1:"); idx >= 0 {
-				rest := line[idx+len("Forwarding from 127.0.0.1:"):]
-				if end := strings.Index(rest, " "); end > 0 {
-					portCh <- rest[:end]
-					return
-				}
+	if alreadyRegistered {
+		fmt.Fprintf(w, "Gateway %s is already registered, re-authenticating...\n", localName)
+		if hasCreds {
+			if err := writeOIDCToken(localName, cfg, gw.Oidc); err != nil {
+				return fmt.Errorf("OIDC token injection: %w", err)
+			}
+			if err := fetchClientTLS(localName, namespace); err != nil {
+				fmt.Fprintf(w, "Warning: could not refresh mTLS certs: %v\n", err)
+			}
+			fmt.Fprintf(w, "OIDC credentials refreshed from acpctl\n")
+		} else {
+			loginArgs := buildLoginArgs(localName, gwURL)
+			loginCmd := exec.Command("openshell", loginArgs...)
+			loginCmd.Stdin = os.Stdin
+			loginCmd.Stdout = os.Stdout
+			loginCmd.Stderr = os.Stderr
+			if err := loginCmd.Run(); err != nil {
+				return fmt.Errorf("openshell gateway login: %w", err)
 			}
 		}
-	}()
-
-	select {
-	case port = <-portCh:
-	case <-pfCtx.Done():
-		return fmt.Errorf("timeout waiting for port-forward to start")
-	}
-
-	fmt.Fprintf(w, "Port-forward active on localhost:%s\n", port)
-
-	_ = exec.Command("openshell", "gateway", "remove", gwName).Run()
-
-	fmt.Fprintf(w, "Registering gateway %s -> https://localhost:%s...\n", gwName, port)
-	addCmd := exec.Command("openshell", "gateway", "add",
-		"--name", gwName, "--local",
-		fmt.Sprintf("https://localhost:%s", port))
-	addOut, err := addCmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("openshell gateway add: %s", string(addOut))
-	}
-
-	for _, key := range []string{"ca.crt", "tls.crt", "tls.key"} {
-		if err := extractSecretKey(namespace, "openshell-server-tls", key, filepath.Join(certDir, key)); err != nil {
-			return fmt.Errorf("re-extract %s: %w", key, err)
+	} else {
+		if hasOIDC && hasCreds {
+			fmt.Fprintf(w, "Registering new gateway %s -> %s...\n", localName, gwURL)
+			if err := writeGatewayConfig(localName, gwURL, gw.Oidc); err != nil {
+				return fmt.Errorf("write gateway config: %w", err)
+			}
+			if err := writeOIDCToken(localName, cfg, gw.Oidc); err != nil {
+				return fmt.Errorf("OIDC token injection: %w", err)
+			}
+			if err := fetchClientTLS(localName, namespace); err != nil {
+				fmt.Fprintf(w, "Warning: could not fetch mTLS certs: %v\n", err)
+				fmt.Fprintf(w, "You may need to pass --gateway-insecure to openshell commands\n")
+			}
+			fmt.Fprintf(w, "OIDC credentials configured from acpctl\n")
+		} else {
+			fmt.Fprintf(w, "Registering new gateway %s -> %s...\n", localName, gwURL)
+			addArgs := buildAddArgs(localName, gwURL, gw.Oidc)
+			addCmd := exec.Command("openshell", addArgs...)
+			addCmd.Stdin = os.Stdin
+			addCmd.Stdout = os.Stdout
+			addCmd.Stderr = os.Stderr
+			if err := addCmd.Run(); err != nil {
+				return fmt.Errorf("openshell gateway add failed: %w", err)
+			}
 		}
 	}
 
-	fmt.Fprintf(w, "Verifying connectivity...\n")
-	statusCmd := exec.Command("openshell", "-g", gwName, "provider", "list")
-	if err := statusCmd.Run(); err != nil {
-		fmt.Fprintf(w, "Warning: connectivity check failed — verify gateway pod is running:\n")
-		fmt.Fprintf(w, "  kubectl logs -l app.kubernetes.io/instance=openshell-gateway -n %s\n", namespace)
-	} else {
-		fmt.Fprintf(w, "Gateway %s connected successfully\n", gwName)
-	}
-
+	fmt.Fprintf(w, "Gateway %s configured successfully\n", localName)
 	fmt.Fprintf(w, "\nUsage:\n")
-	fmt.Fprintf(w, "  openshell sandbox list --gateway %s\n", gwName)
-
-	fmt.Fprintf(w, "\nPort-forward is running in the foreground (PID %d). Press Ctrl+C to stop.\n", pfCmd.Process.Pid)
-
-	_ = pfCmd.Wait()
+	fmt.Fprintf(w, "  openshell sandbox list --gateway %s\n", localName)
 
 	return nil
-}
-
-func kubectlNamespaceExists(namespace string) bool {
-	cmd := exec.Command("kubectl", "get", "namespace", namespace)
-	return cmd.Run() == nil
-}
-
-func kubectlSecretExists(namespace, name string) bool {
-	cmd := exec.Command("kubectl", "get", "secret", name, "-n", namespace)
-	return cmd.Run() == nil
-}
-
-func extractSecretKey(namespace, secretName, key, destPath string) error {
-	cmd := exec.Command("kubectl", "get", "secret", secretName,
-		"-n", namespace,
-		"-o", fmt.Sprintf("jsonpath={.data.%s}", strings.ReplaceAll(key, ".", "\\.")))
-	out, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("kubectl get secret: %w", err)
-	}
-
-	decoded, err := base64.StdEncoding.DecodeString(string(out))
-	if err != nil {
-		return fmt.Errorf("base64 decode: %w", err)
-	}
-
-	perm := os.FileMode(0644)
-	if strings.Contains(key, "key") {
-		perm = 0600
-	}
-	return os.WriteFile(destPath, decoded, perm)
 }

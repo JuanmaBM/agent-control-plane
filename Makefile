@@ -3,11 +3,11 @@
 .PHONY: local-dev-token
 .PHONY: local-logs local-logs-api-server local-logs-ui local-logs-control-plane local-shell-api-server local-shell-ui
 .PHONY: local-test local-test-dev local-test-quick test-all local-troubleshoot local-port-forward local-stop-port-forward
-.PHONY: push-all registry-login setup-hooks remove-hooks lint check-minikube check-kind check-kubectl check-local-context dev-bootstrap kind-rebuild kind-reload-ambient-ui kind-reload-ambient-control-plane kind-reload-ambient-api-server kind-reload-runner-openshell kind-load-runner kind-status kind-login kind-sso-toggle kind-setup-vertex kind-setup-openshell-cli kind-setup-openshell-cli-stop
+.PHONY: push-all registry-login setup-hooks remove-hooks lint check-minikube check-kind check-kubectl check-local-context dev-bootstrap kind-rebuild kind-reload-ambient-ui kind-reload-ambient-control-plane kind-reload-ambient-api-server kind-reload-runner-openshell kind-load-runner kind-status kind-login kind-sso-toggle kind-setup-vertex
 .PHONY: preflight-cluster preflight dev-env dev
 .PHONY: e2e-test e2e-setup e2e-clean deploy-langfuse-openshift test-gateway-e2e test-vteam-catalog-lab
 .PHONY: unleash-port-forward unleash-status
-.PHONY: kind-port-forward kind-port-forward-stop _kind-start-port-forward kind-acpctl-login kind-apply-examples
+.PHONY: kind-port-forward kind-port-forward-stop _kind-start-port-forward _kind-print-access kind-acpctl-login kind-apply-examples
 .PHONY: setup-minio minio-console minio-logs minio-status
 .PHONY: validate-makefile lint-makefile check-shell makefile-health benchmark benchmark-ci
 .PHONY: _create-operator-config _auto-port-forward _show-access-info _kind-load-images _kind-preload-runner
@@ -1031,25 +1031,7 @@ kind-up: preflight-cluster build-cli ## Start kind cluster and deploy the platfo
 	@echo "$(COLOR_BLUE)▶$(COLOR_RESET) Waiting for ambient-ui to pick up SSO config..."
 	@kubectl wait --for=condition=ready pod -l app=ambient-ui -n $(NAMESPACE) --timeout=60s >/dev/null 2>&1
 	@$(MAKE) --no-print-directory _kind-start-port-forward
-	@echo ""
-	@echo "$(COLOR_BOLD)Access the platform:$(COLOR_RESET)"
-	@echo "  Cluster:  $(KIND_CLUSTER_NAME)"
-	@echo ""
-	@echo "  Frontend:   http://localhost:$(KIND_FWD_FRONTEND_PORT)"
-	@echo "  Backend:    http://localhost:$(KIND_FWD_BACKEND_PORT)"
-	@echo "  Ambient UI: http://localhost:$(KIND_FWD_AMBIENT_UI_PORT)"
-	@echo "  Keycloak:   http://localhost:$(KIND_FWD_KEYCLOAK_PORT)"
-	@echo ""
-	@echo "$(COLOR_BOLD)Default SSO users:$(COLOR_RESET)"
-	@echo "  Developer: developer / developer (ambient-users group)"
-	@echo "  Admin:     admin / admin (ambient-users, ambient-admins groups)"
-	@echo ""
-	@echo "  Get test token: kubectl get secret test-user-token -n ambient-code -o jsonpath='{.data.token}' | base64 -d"
-	@echo ""
-	@echo "  Configure CLI:      $(COLOR_BOLD)make kind-acpctl-login$(COLOR_RESET)"
-	@echo "  Setup OpenShell:    $(COLOR_BOLD)make kind-setup-openshell-cli$(COLOR_RESET)"
-	@echo "  Stop port-forwards: $(COLOR_BOLD)make kind-port-forward-stop$(COLOR_RESET)"
-	@echo "  Run tests:          $(COLOR_BOLD)make test-e2e$(COLOR_RESET)"
+	@$(MAKE) --no-print-directory _kind-print-access
 
 kind-down: ## Stop and delete kind cluster
 	@echo "$(COLOR_BLUE)▶$(COLOR_RESET) Cleaning up kind cluster '$(KIND_CLUSTER_NAME)'..."
@@ -1068,38 +1050,11 @@ kind-login: check-kubectl check-local-context ## Set kubectl context, port-forwa
 		kubectl config use-context kind-$(KIND_CLUSTER_NAME); \
 	fi
 	@echo "$(COLOR_GREEN)✓$(COLOR_RESET) kubeconfig set to kind-$(KIND_CLUSTER_NAME)"
-	@echo ""
-	@echo "Starting port-forwards..."
-	@pkill -f "port-forward.*ambient-api-server" 2>/dev/null || true
-	@pkill -f "port-forward.*ambient-ui-service" 2>/dev/null || true
-	@kubectl port-forward -n $(NAMESPACE) svc/ambient-api-server $(KIND_FWD_API_SERVER_PORT):8000 >/tmp/pf-api-server.log 2>&1 & \
-		sleep 1; \
-		echo "$(COLOR_GREEN)✓$(COLOR_RESET) ambient-api-server → http://localhost:$(KIND_FWD_API_SERVER_PORT)"
-	@kubectl port-forward -n $(NAMESPACE) svc/ambient-ui-service $(KIND_FWD_FRONTEND_PORT):3000 >/tmp/pf-ui.log 2>&1 & \
-		sleep 1; \
-		echo "$(COLOR_GREEN)✓$(COLOR_RESET) frontend          → http://localhost:$(KIND_FWD_FRONTEND_PORT)"
-	@echo ""
-	@echo "Configuring acpctl..."
-	@TOKEN=$$(kubectl get secret test-user-token -n $(NAMESPACE) -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null); \
-	if [ -z "$$TOKEN" ]; then \
-		echo "$(COLOR_YELLOW)Warning: test-user-token not found — acpctl not configured$(COLOR_RESET)"; \
-	else \
-		components/ambient-cli/acpctl login --url http://localhost:$(KIND_FWD_API_SERVER_PORT) --token "$$TOKEN" 2>/dev/null || \
-			./acpctl login --url http://localhost:$(KIND_FWD_API_SERVER_PORT) --token "$$TOKEN" 2>/dev/null || \
-			echo "$(COLOR_YELLOW)Warning: acpctl not built — run 'make build-cli' first$(COLOR_RESET)"; \
-		echo "$(COLOR_GREEN)✓$(COLOR_RESET) acpctl configured: http://localhost:$(KIND_FWD_API_SERVER_PORT)"; \
-		echo ""; \
-		echo "Test token:"; \
-		echo "$$TOKEN"; \
-	fi
+	@$(MAKE) --no-print-directory kind-port-forward
+	@$(MAKE) --no-print-directory kind-acpctl-login
 
-kind-acpctl-login: check-kubectl ## Configure acpctl CLI against the kind cluster
-	@TOKEN=$$(kubectl get secret test-user-token -n $(NAMESPACE) -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null); \
-	if [ -z "$$TOKEN" ]; then \
-		echo "$(COLOR_RED)\u2717$(COLOR_RESET) test-user-token not found in namespace $(NAMESPACE)"; \
-		exit 1; \
-	fi; \
-	ACPCTL=""; \
+kind-acpctl-login: check-kubectl ## Configure acpctl CLI against the kind cluster (OIDC via Keycloak)
+	@ACPCTL=""; \
 	if command -v acpctl >/dev/null 2>&1; then \
 		ACPCTL=acpctl; \
 	elif [ -x components/ambient-cli/acpctl ]; then \
@@ -1108,12 +1063,17 @@ kind-acpctl-login: check-kubectl ## Configure acpctl CLI against the kind cluste
 		ACPCTL=./acpctl; \
 	fi; \
 	if [ -n "$$ACPCTL" ]; then \
-		$$ACPCTL login --url http://localhost:$(KIND_FWD_BACKEND_PORT) --token "$$TOKEN" && \
-		echo "$(COLOR_GREEN)\u2713$(COLOR_RESET) acpctl configured: http://localhost:$(KIND_FWD_BACKEND_PORT)"; \
+		$$ACPCTL login --password-grant \
+			--username $${KIND_DEV_USERNAME:-developer} \
+			--password $${KIND_DEV_PASSWORD:-developer} \
+			--issuer-url http://localhost:$(KIND_FWD_KEYCLOAK_PORT)/realms/ambient-code \
+			--client-id openshell-cli \
+			--url http://localhost:$(KIND_FWD_BACKEND_PORT) && \
+		echo "$(COLOR_GREEN)\u2713$(COLOR_RESET) acpctl configured (OIDC): http://localhost:$(KIND_FWD_BACKEND_PORT)"; \
 	else \
-		echo "$(COLOR_YELLOW)acpctl not found — build it first: make build-cli$(COLOR_RESET)"; \
+		echo "$(COLOR_YELLOW)acpctl not found \u2014 build it first: make build-cli$(COLOR_RESET)"; \
 		echo "  Then run manually:"; \
-		echo "  acpctl login --url http://localhost:$(KIND_FWD_BACKEND_PORT) --token $$TOKEN"; \
+		echo "  acpctl login --password-grant --username developer --password developer --issuer-url http://localhost:$(KIND_FWD_KEYCLOAK_PORT)/realms/ambient-code --client-id openshell-cli --url http://localhost:$(KIND_FWD_BACKEND_PORT)"; \
 	fi
 
 kind-apply-examples: ## Apply example resources (projects, providers, agents, credentials) to the cluster via acpctl
@@ -1160,19 +1120,36 @@ kind-port-forward: check-kubectl check-local-context ## Port-forward kind servic
 	@echo "$(COLOR_BLUE)▶$(COLOR_RESET) Waiting for ambient-ui to be ready..."
 	@kubectl wait --for=condition=ready pod -l app=ambient-ui -n $(NAMESPACE) --timeout=60s >/dev/null 2>&1
 	@$(MAKE) --no-print-directory _kind-start-port-forward
+	@$(MAKE) --no-print-directory _kind-print-access
+
+_kind-print-access:
 	@echo ""
-	@echo "$(COLOR_GREEN)✓$(COLOR_RESET) Port forwarding started in background"
+	@echo "$(COLOR_BOLD)Access the platform:$(COLOR_RESET)"
+	@echo "  Cluster:  $(KIND_CLUSTER_NAME)"
 	@echo ""
 	@echo "  Frontend:   http://localhost:$(KIND_FWD_FRONTEND_PORT)"
 	@echo "  Backend:    http://localhost:$(KIND_FWD_BACKEND_PORT)"
 	@echo "  Ambient UI: http://localhost:$(KIND_FWD_AMBIENT_UI_PORT)"
 	@echo "  Keycloak:   http://localhost:$(KIND_FWD_KEYCLOAK_PORT)"
+	@for PORT_FILE in $(KIND_PF_DIR)/kind-pf-openshell-*.port; do \
+		[ -f "$$PORT_FILE" ] || continue; \
+		NS=$$(basename "$$PORT_FILE" .port | sed 's/^kind-pf-openshell-//'); \
+		PORT=$$(cat "$$PORT_FILE"); \
+		if [ -n "$$PORT" ]; then \
+			echo "  Gateway ($$NS): https://localhost:$$PORT"; \
+		fi; \
+	done
 	@echo ""
 	@echo "$(COLOR_BOLD)Default SSO users:$(COLOR_RESET)"
-	@echo "  Developer: developer / developer"
-	@echo "  Admin:     admin / admin"
+	@echo "  Developer: developer / developer (ambient-users group)"
+	@echo "  Admin:     admin / admin (ambient-users, ambient-admins groups)"
 	@echo ""
-	@echo "  Stop with: $(COLOR_BOLD)make kind-port-forward-stop$(COLOR_RESET)"
+	@echo "  Get test token: kubectl get secret test-user-token -n ambient-code -o jsonpath='{.data.token}' | base64 -d"
+	@echo ""
+	@echo "  Configure CLI:      $(COLOR_BOLD)make kind-acpctl-login$(COLOR_RESET)"
+	@echo "  Setup openshell:    $(COLOR_BOLD)acpctl gateway setup-cli <name> --gateway-url https://localhost:<port>$(COLOR_RESET)"
+	@echo "  Stop port-forwards: $(COLOR_BOLD)make kind-port-forward-stop$(COLOR_RESET)"
+	@echo "  Run tests:          $(COLOR_BOLD)make test-e2e$(COLOR_RESET)"
 
 _kind-start-port-forward:
 	@$(MAKE) --no-print-directory kind-port-forward-stop 2>/dev/null || true
@@ -1181,6 +1158,17 @@ _kind-start-port-forward:
 	@kubectl port-forward -n $(NAMESPACE) svc/ambient-api-server $(KIND_FWD_BACKEND_PORT):8000 >$(KIND_PF_DIR)/kind-pf-backend.log 2>&1 & echo $$! > $(KIND_PF_DIR)/kind-pf-backend.pid
 	@kubectl port-forward -n $(NAMESPACE) svc/ambient-ui-service $(KIND_FWD_AMBIENT_UI_PORT):3000 >$(KIND_PF_DIR)/kind-pf-ambient-ui.log 2>&1 & echo $$! > $(KIND_PF_DIR)/kind-pf-ambient-ui.pid
 	@kubectl port-forward -n $(NAMESPACE) svc/keycloak-service $(KIND_FWD_KEYCLOAK_PORT):11880 >$(KIND_PF_DIR)/kind-pf-keycloak.log 2>&1 & echo $$! > $(KIND_PF_DIR)/kind-pf-keycloak.pid
+	@# Discover and port-forward openshell gateways on deterministic ports
+	@GW_NAMESPACES=$$(kubectl get pods --all-namespaces -l app.kubernetes.io/instance=openshell-gateway -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null | sort -u); \
+	OFFSET=0; \
+	for NS in $$GW_NAMESPACES; do \
+		PORT=$$(($(KIND_FWD_GATEWAY_BASE_PORT) + $$OFFSET)); \
+		kubectl port-forward -n "$$NS" statefulset/openshell-gateway $$PORT:8080 \
+			>"$(KIND_PF_DIR)/kind-pf-openshell-$$NS.log" 2>&1 & \
+		echo $$! > "$(KIND_PF_DIR)/kind-pf-openshell-$$NS.pid"; \
+		echo "$$PORT" > "$(KIND_PF_DIR)/kind-pf-openshell-$$NS.port"; \
+		OFFSET=$$(($$OFFSET + 1)); \
+	done
 	@sleep 1
 	@FAILED=0; \
 	for svc in frontend backend ambient-ui keycloak; do \
@@ -1190,6 +1178,18 @@ _kind-start-port-forward:
 		else \
 			echo "$(COLOR_RED)✗$(COLOR_RESET) $$svc port-forward failed to start (check $(KIND_PF_DIR)/kind-pf-$$svc.log)"; \
 			FAILED=1; \
+		fi; \
+	done; \
+	for PID_FILE in $(KIND_PF_DIR)/kind-pf-openshell-*.pid; do \
+		[ -f "$$PID_FILE" ] || continue; \
+		NS=$$(basename "$$PID_FILE" .pid | sed 's/^kind-pf-openshell-//'); \
+		if ps -p $$(cat "$$PID_FILE") >/dev/null 2>&1; then \
+			PORT=$$(cat "$(KIND_PF_DIR)/kind-pf-openshell-$$NS.port" 2>/dev/null); \
+			if [ -n "$$PORT" ]; then \
+				echo "$(COLOR_GREEN)✓$(COLOR_RESET) openshell-gateway ($$NS) -> localhost:$$PORT"; \
+			fi; \
+		else \
+			echo "$(COLOR_RED)✗$(COLOR_RESET) openshell-gateway ($$NS) port-forward failed (check $(KIND_PF_DIR)/kind-pf-openshell-$$NS.log)"; \
 		fi; \
 	done; \
 	if [ "$$FAILED" -ne 0 ]; then exit 1; fi
@@ -1208,6 +1208,19 @@ kind-port-forward-stop: ## Stop background kind port-forwarding
 			rm -f "$$PID_FILE"; \
 		fi; \
 		rm -f "$(KIND_PF_DIR)/kind-pf-$$svc.log"; \
+	done; \
+	for PID_FILE in $(KIND_PF_DIR)/kind-pf-openshell-*.pid; do \
+		[ -f "$$PID_FILE" ] || continue; \
+		NS=$$(basename "$$PID_FILE" .pid | sed 's/^kind-pf-openshell-//'); \
+		PID=$$(cat "$$PID_FILE"); \
+		if ps -p "$$PID" >/dev/null 2>&1; then \
+			kill "$$PID" 2>/dev/null || true; \
+			echo "  Stopped openshell-gateway ($$NS) port-forward (PID $$PID)"; \
+			STOPPED=1; \
+		fi; \
+		rm -f "$$PID_FILE"; \
+		rm -f "$(KIND_PF_DIR)/kind-pf-openshell-$$NS.log"; \
+		rm -f "$(KIND_PF_DIR)/kind-pf-openshell-$$NS.port"; \
 	done; \
 	if [ "$$STOPPED" -eq 1 ]; then \
 		echo "$(COLOR_GREEN)✓$(COLOR_RESET) Port forwarding stopped"; \
@@ -1488,35 +1501,6 @@ kind-setup-vertex: check-kubectl _kind-require-cluster ## Configure Vertex AI fo
 			CLOUD_ML_REGION="$(CLOUD_ML_REGION)" \
 			AMBIENT_UI_URL="http://$$(if [ -n "$(KIND_HOST)" ]; then echo "$(KIND_HOST)"; else echo "localhost"; fi):$(KIND_FWD_AMBIENT_UI_PORT)" \
 			./scripts/setup-vertex-kind.sh; \
-	fi
-
-kind-setup-openshell-cli: check-kubectl _kind-require-cluster ## Auto-discover tenant gateways and register openshell CLI access (stop with: make kind-setup-openshell-cli-stop)
-	@NAMESPACES=$$(kubectl get pods --all-namespaces -l app.kubernetes.io/instance=openshell-gateway -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null | sort -u); \
-	if [ -z "$$NAMESPACES" ]; then \
-		echo "$(COLOR_RED)✗$(COLOR_RESET) No openshell-gateway pods found in any namespace"; \
-		exit 1; \
-	fi; \
-	echo "$(COLOR_BLUE)▶$(COLOR_RESET) Found openshell-gateway in: $$NAMESPACES"; \
-	PF_DIR=$(KIND_PF_DIR) GATEWAY_BASE_PORT=$(KIND_FWD_GATEWAY_BASE_PORT) ./scripts/setup-gateway-cli.sh $$NAMESPACES
-
-kind-setup-openshell-cli-stop: ## Stop background openshell gateway port-forwards
-	@STOPPED=0; \
-	for PID_FILE in $(KIND_PF_DIR)/kind-pf-openshell-*.pid; do \
-		[ -f "$$PID_FILE" ] || continue; \
-		SVC=$$(basename "$$PID_FILE" .pid | sed 's/^kind-pf-openshell-//'); \
-		PID=$$(cat "$$PID_FILE"); \
-		if ps -p "$$PID" >/dev/null 2>&1; then \
-			kill "$$PID" 2>/dev/null || true; \
-			echo "  Stopped openshell-gateway port-forward for $$SVC (PID $$PID)"; \
-			STOPPED=1; \
-		fi; \
-		rm -f "$$PID_FILE"; \
-		rm -f "$(KIND_PF_DIR)/kind-pf-openshell-$$SVC.log"; \
-	done; \
-	if [ "$$STOPPED" -eq 1 ]; then \
-		echo "$(COLOR_GREEN)✓$(COLOR_RESET) Openshell gateway port-forwarding stopped"; \
-	else \
-		echo "$(COLOR_YELLOW)No active openshell gateway port-forwards found$(COLOR_RESET)"; \
 	fi
 
 kind-clean: kind-down ## Alias for kind-down

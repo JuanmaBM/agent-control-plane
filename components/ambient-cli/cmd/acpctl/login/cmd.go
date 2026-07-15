@@ -17,6 +17,9 @@ var args struct {
 	insecureSkipVerify bool
 	useAuthCode        bool
 	clientCredentials  bool
+	passwordGrant      bool
+	username           string
+	password           string
 	issuerURL          string
 	clientID           string
 	clientSecret       string
@@ -35,7 +38,10 @@ To log in via browser (OAuth2 authorization code + PKCE via Red Hat SSO):
   acpctl login --use-auth-code --url https://api.example.com
 
 To log in as a service account (headless, OAuth2 client_credentials grant):
-  acpctl login --client-credentials --client-id <id> --client-secret <secret> --url https://api.example.com`,
+  acpctl login --client-credentials --client-id <id> --client-secret <secret> --url https://api.example.com
+
+To log in with username/password (headless, OAuth2 resource owner password grant):
+  acpctl login --password-grant --username developer --password developer --issuer-url http://localhost:11880/realms/ambient-code --url http://localhost:12080`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: run,
 }
@@ -48,6 +54,9 @@ func init() {
 	flags.BoolVar(&args.insecureSkipVerify, "insecure-skip-tls-verify", false, "Skip TLS certificate verification (insecure)")
 	flags.BoolVar(&args.useAuthCode, "use-auth-code", false, "Log in via browser using OAuth2 authorization code flow (Red Hat SSO)")
 	flags.BoolVar(&args.clientCredentials, "client-credentials", false, "Log in using OAuth2 client_credentials grant (headless service accounts)")
+	flags.BoolVar(&args.passwordGrant, "password-grant", false, "Log in using OAuth2 resource owner password grant (headless, requires --username and --password)")
+	flags.StringVar(&args.username, "username", "", "Username for --password-grant")
+	flags.StringVar(&args.password, "password", "", "Password for --password-grant")
 	flags.StringVar(&args.issuerURL, "issuer-url", defaultIssuerURL, "OIDC issuer URL (used with --use-auth-code)")
 	flags.StringVar(&args.clientID, "client-id", defaultClientID, "OAuth2 client ID (used with --use-auth-code)")
 	flags.StringVar(&args.clientSecret, "client-secret", "", "OAuth2 client secret (used with --use-auth-code for confidential clients; never persisted to config)")
@@ -64,11 +73,17 @@ func run(cmd *cobra.Command, positional []string) error {
 	if args.clientCredentials {
 		modes++
 	}
+	if args.passwordGrant {
+		modes++
+	}
 	if modes != 1 {
-		return fmt.Errorf("exactly one of --token, --use-auth-code, or --client-credentials is required")
+		return fmt.Errorf("exactly one of --token, --use-auth-code, --client-credentials, or --password-grant is required")
 	}
 	if args.clientCredentials && args.clientSecret == "" {
 		return fmt.Errorf("--client-secret is required with --client-credentials")
+	}
+	if args.passwordGrant && (args.username == "" || args.password == "") {
+		return fmt.Errorf("--username and --password are required with --password-grant")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -115,6 +130,15 @@ func run(cmd *cobra.Command, positional []string) error {
 		}
 		accessToken = tokens.AccessToken
 		cfg.RefreshToken = ""
+		cfg.IssuerURL = args.issuerURL
+		cfg.ClientID = args.clientID
+	case args.passwordGrant:
+		tokens, err := runPasswordGrantFlow(args.issuerURL, args.clientID, args.username, args.password)
+		if err != nil {
+			return fmt.Errorf("password-grant login: %w", err)
+		}
+		accessToken = tokens.AccessToken
+		cfg.RefreshToken = tokens.RefreshToken
 		cfg.IssuerURL = args.issuerURL
 		cfg.ClientID = args.clientID
 	default:
