@@ -199,20 +199,7 @@ func gatewayRegistered(localName string) bool {
 }
 
 func resolveLocalName(project, apiGWName string) string {
-	base := project + "-" + apiGWName
-	existing := listOpenshellGateways()
-	if existing[base] {
-		return base
-	}
-	if !existing[base] {
-		return base
-	}
-	for i := 1; ; i++ {
-		candidate := fmt.Sprintf("%s-%d", base, i)
-		if !existing[candidate] {
-			return candidate
-		}
-	}
+	return project + "-" + apiGWName
 }
 
 func isLocalURL(url string) bool {
