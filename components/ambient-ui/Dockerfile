@@ -28,6 +28,9 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /ambient-sdk /ambient-sdk
 COPY ambient-ui/ .
 
+# Copy learning content for build-time static discovery (populated by Makefile pre-build step)
+COPY ambient-ui/.learn-content/ /learn-content/
+
 # Next.js collects completely anonymous telemetry data about general usage.
 # Learn more here: https://nextjs.org/telemetry
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -62,6 +65,7 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=builder /app-output/. ./
+COPY --from=builder /learn-content /learn-content
 
 USER 1001
 

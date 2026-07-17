@@ -1346,11 +1346,15 @@ kind-rebuild: check-kind check-kubectl check-local-context _kind-require-cluster
 
 kind-reload-ambient-ui: check-kind check-kubectl check-local-context ## Rebuild and reload ambient-ui only (kind)
 	@echo "$(COLOR_BLUE)▶$(COLOR_RESET) Rebuilding ambient-ui..."
+	@mkdir -p components/ambient-ui/.learn-content/concepts components/ambient-ui/.learn-content/examples
+	@cp -r docs/src/content/docs/concepts/*.md components/ambient-ui/.learn-content/concepts/ 2>/dev/null || true
+	@cp -r examples/docs/*.md components/ambient-ui/.learn-content/examples/ 2>/dev/null || true
 	@cd components && $(CONTAINER_ENGINE) build $(PLATFORM_FLAG) \
 		-f ambient-ui/Dockerfile \
 		--build-arg GIT_COMMIT=$(shell git rev-parse HEAD) \
 		--build-arg OPENSHELL_USE_GATEWAY=$(OPENSHELL_USE_GATEWAY) \
 		-t $(AMBIENT_UI_IMAGE) . $(QUIET_REDIRECT)
+	@rm -rf components/ambient-ui/.learn-content
 	$(call kind-reload-component,$(AMBIENT_UI_IMAGE),ambient-ui,Ambient UI,ambient-ui)
 
 kind-reload-ambient-control-plane: check-kind check-kubectl check-local-context ## Rebuild and reload ambient-control-plane only (kind)
