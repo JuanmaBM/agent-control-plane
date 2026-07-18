@@ -716,6 +716,20 @@ if [ -n "$CREATED_SESSION_ID" ] && [ "${SESSION_RUNNING:-false}" = "true" ]; the
     pass "LLM response message(s) found in session messages (${LLM_RESPONSE_FOUND})"
   else
     fail "No LLM response messages found in session messages"
+    echo "--- DIAGNOSTIC: session phase ---"
+    api GET "/api/ambient/v1/sessions/${CREATED_SESSION_ID}" 2>/dev/null \
+      | jq '{phase, status_message: .status_message, sandbox_name: .sandbox_name}' 2>/dev/null || true
+    echo "--- DIAGNOSTIC: sandbox pod status ---"
+    kubectl get pod "${SBX_NAME}" -n "${TENANT}" -o wide 2>&1 || true
+    echo "--- DIAGNOSTIC: sandbox pod events ---"
+    kubectl describe pod "${SBX_NAME}" -n "${TENANT}" 2>&1 | grep -A 20 "^Events:" || true
+    echo "--- DIAGNOSTIC: runner log (last 80 lines) ---"
+    kubectl exec -n "${TENANT}" "${SBX_NAME}" -- cat /sandbox/.runner/logs/runner.log 2>&1 | tail -80 || echo "(no runner log)"
+    echo "--- DIAGNOSTIC: sandbox supervisor log (last 80 lines) ---"
+    kubectl logs -n "${TENANT}" "${SBX_NAME}" -c agent --tail=80 2>&1 || true
+    echo "--- DIAGNOSTIC: control plane log (last 100 lines) ---"
+    kubectl logs -n "${NAMESPACE}" -l app=ambient-control-plane --tail=100 2>&1 || true
+    echo "--- END DIAGNOSTICS ---"
   fi
 
   # 11c. Verify the mock LLM echo content is present in the message payloads
@@ -758,6 +772,18 @@ if [ -n "$CREATED_SESSION_ID" ] && [ "${SESSION_RUNNING:-false}" = "true" ]; the
     pass "Long-running session and sandbox remained Running for 120s after LLM response"
   else
     fail "Long-running sandbox was torn down: ${LONGRUN_FAIL_REASON}"
+    echo "--- DIAGNOSTIC: session details ---"
+    api GET "/api/ambient/v1/sessions/${CREATED_SESSION_ID}" 2>/dev/null \
+      | jq '{phase, status_message: .status_message}' 2>/dev/null || true
+    echo "--- DIAGNOSTIC: sandbox pod status ---"
+    kubectl get pod "${SBX_NAME}" -n "${TENANT}" -o wide 2>&1 || true
+    echo "--- DIAGNOSTIC: runner log (last 80 lines) ---"
+    kubectl exec -n "${TENANT}" "${SBX_NAME}" -- cat /sandbox/.runner/logs/runner.log 2>&1 | tail -80 || echo "(no runner log)"
+    echo "--- DIAGNOSTIC: sandbox supervisor log (last 80 lines) ---"
+    kubectl logs -n "${TENANT}" "${SBX_NAME}" -c agent --tail=80 2>&1 || true
+    echo "--- DIAGNOSTIC: control plane log (last 100 lines) ---"
+    kubectl logs -n "${NAMESPACE}" -l app=ambient-control-plane --tail=100 2>&1 || true
+    echo "--- END DIAGNOSTICS ---"
   fi
 else
   skip "Long-running session verification" "session not running or not created"
@@ -771,6 +797,14 @@ if should_run_test "short_running"; then
 # ============================================================================
 
 section "13. Short-running session lifecycle (stop_on_run_finished) [short_running]"
+
+# The start handler returns an existing active session for the same agent
+# instead of creating a new one. Delete the long-running session first so a
+# fresh session is created with stop_on_run_finished=true.
+if [ -n "${CREATED_SESSION_ID:-}" ]; then
+  api DELETE "/api/ambient/v1/sessions/${CREATED_SESSION_ID}" >/dev/null 2>&1 || true
+  sleep 2
+fi
 
 # Start a new session with stop_on_run_finished=true in the request body.
 # The flag must be set at creation time so the sandbox is provisioned with the
@@ -815,6 +849,18 @@ if [ -n "$SHORT_SESSION_ID" ]; then
     pass "Short-running session received LLM response"
   else
     fail "Short-running session did not receive LLM response after 180s"
+    echo "--- DIAGNOSTIC: short-running session ---"
+    api GET "/api/ambient/v1/sessions/${SHORT_SESSION_ID}" 2>/dev/null \
+      | jq '{phase, status_message: .status_message}' 2>/dev/null || true
+    echo "--- DIAGNOSTIC: sandbox pod ---"
+    kubectl get pod "${SHORT_SBX_NAME}" -n "${TENANT}" -o wide 2>&1 || true
+    echo "--- DIAGNOSTIC: runner log ---"
+    kubectl exec -n "${TENANT}" "${SHORT_SBX_NAME}" -- cat /sandbox/.runner/logs/runner.log 2>&1 | tail -80 || echo "(no runner log)"
+    echo "--- DIAGNOSTIC: supervisor log ---"
+    kubectl logs -n "${TENANT}" "${SHORT_SBX_NAME}" -c agent --tail=80 2>&1 || true
+    echo "--- DIAGNOSTIC: control plane log ---"
+    kubectl logs -n "${NAMESPACE}" -l app=ambient-control-plane --tail=100 2>&1 || true
+    echo "--- END DIAGNOSTICS ---"
   fi
 
   # After the runner finishes with stop_on_run_finished=true, the control plane
@@ -834,6 +880,9 @@ if [ -n "$SHORT_SESSION_ID" ]; then
     pass "Short-running session transitioned to ${SHORT_PHASE}"
   else
     fail "Short-running session phase is '${SHORT_PHASE}' (expected Completed)"
+    echo "--- DIAGNOSTIC: session status_message ---"
+    api GET "/api/ambient/v1/sessions/${SHORT_SESSION_ID}" 2>/dev/null \
+      | jq '{phase, status_message: .status_message}' 2>/dev/null || true
   fi
 
   # Verify sandbox pod is terminated after session completion (up to 120s).
@@ -984,6 +1033,12 @@ if [ -n "$LOCKED_AGENT_ID" ]; then
         else
           fail "Locked-down policy did NOT deny outbound network access"
           echo "  Output: $(echo "$LOCKED_CURL_OUTPUT" | head -c 200)"
+          echo "--- DIAGNOSTIC: locked-down session ---"
+          api GET "/api/ambient/v1/sessions/${LOCKED_SESSION_ID}" 2>/dev/null \
+            | jq '{phase, status_message: .status_message}' 2>/dev/null || true
+          echo "--- DIAGNOSTIC: supervisor log ---"
+          kubectl logs -n "${TENANT}" "${LOCKED_SBX_NAME}" -c agent --tail=40 2>&1 || true
+          echo "--- END DIAGNOSTICS ---"
         fi
       else
         fail "Locked-down network test — session not Running (phase: ${LOCKED_PHASE:-unknown})"
@@ -1074,6 +1129,12 @@ if [ -n "$PERM_AGENT_ID" ]; then
           pass "Permissive policy allowed update.code.visualstudio.com"
         else
           fail "Permissive network test — no response from curl"
+          echo "--- DIAGNOSTIC: permissive session ---"
+          api GET "/api/ambient/v1/sessions/${PERM_SESSION_ID}" 2>/dev/null \
+            | jq '{phase, status_message: .status_message}' 2>/dev/null || true
+          echo "--- DIAGNOSTIC: supervisor log ---"
+          kubectl logs -n "${TENANT}" "${PERM_SBX_NAME}" -c agent --tail=40 2>&1 || true
+          echo "--- END DIAGNOSTICS ---"
         fi
       else
         fail "Permissive network test — session not Running (phase: ${PERM_PHASE:-unknown})"

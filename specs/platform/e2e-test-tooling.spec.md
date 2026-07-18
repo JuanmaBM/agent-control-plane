@@ -296,7 +296,7 @@ kind: Policy
 name: mock-llm-permissive
 spec:
   version: 1
-  filesystem:
+  filesystem_policy:
     include_workdir: true
     read_only:
       - /usr
@@ -308,10 +308,14 @@ spec:
       - /runner
       - /etc
       - /var/log
+      - /var/run/secrets
     read_write:
       - /sandbox
       - /tmp
       - /dev/null
+      - /dev/pts
+      - /dev/shm
+      - /workspace
   landlock:
     compatibility: best_effort
   process:
