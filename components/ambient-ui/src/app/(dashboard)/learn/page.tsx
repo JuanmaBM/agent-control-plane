@@ -31,7 +31,8 @@ export default function LearnPage() {
                 key={item.slug}
                 title={item.title}
                 description={item.description}
-                href={`/learn/concepts/${item.slug}`}
+                section="concepts"
+                slug={item.slug}
               />
             ))}
           </div>
@@ -53,7 +54,8 @@ export default function LearnPage() {
                 key={item.slug}
                 title={item.title}
                 description={item.description}
-                href={`/learn/examples/${item.slug}`}
+                section="examples"
+                slug={item.slug}
               />
             ))}
           </div>

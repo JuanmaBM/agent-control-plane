@@ -21,7 +21,7 @@ ACP ships two catalog examples you can use as starting points.
 | Product swarm | `vteam-product-swarm` | Cross-functional delivery: product manager, engineer, designer, researcher, writer |
 | Codebase maintainers | `codebase-maintainers` | Internal upkeep: implementation, runtime readiness, CI, security, docs, release gates |
 
-The manifests live in `examples/vteam-catalog/`. See the [vTeam Lab](/guides/vteam-lab/) guide to apply them.
+The manifests live in `examples/vteam-catalog/`. See the [Lab guide](/guides/vteam-lab/) to apply them.
 
 ### Product swarm
 
@@ -83,4 +83,4 @@ Agents do not communicate directly. Instead, they produce artifacts -- commits, 
    acpctl agent start --project my-team implementer
    ```
 
-For a complete walkthrough using the bundled catalog teams, see the [vTeam Lab](/guides/vteam-lab/) guide.
+For a complete walkthrough using the bundled catalog teams, see the [Lab guide](/guides/vteam-lab/).

@@ -4,13 +4,14 @@ import { Card, CardHeader, CardTitle, CardDescription } from '@/components/ui/ca
 type LearnCardProps = {
   title: string
   description: string
-  href: string
+  section: 'concepts' | 'examples'
+  slug: string
 }
 
-export function LearnCard({ title, description, href }: LearnCardProps) {
-  const safeHref = href.startsWith('/learn/') ? href : '/learn'
+export function LearnCard({ title, description, section, slug }: LearnCardProps) {
+  const safePath = `/learn/${encodeURIComponent(section)}/${encodeURIComponent(slug)}`
   return (
-    <Link href={safeHref} className="group">
+    <Link href={safePath} className="group">
       <Card className="h-full transition-colors group-hover:border-primary/50">
         <CardHeader>
           <CardTitle className="text-base">{title}</CardTitle>
