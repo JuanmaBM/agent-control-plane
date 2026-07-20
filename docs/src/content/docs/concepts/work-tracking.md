@@ -72,7 +72,7 @@ The timeline supports zoom (Ctrl/Cmd + scroll or +/- buttons) and time window pr
 
 ### Notification bell
 
-The topbar bell shows a badge count of actionable items (critical and warning only). Clicking it opens a tray listing each item with its criticality, status text, and wait time. The bell is visible on every page.
+The notification bell shows a badge count of actionable items (critical and warning only). Clicking it opens a tray listing each item with its criticality, status text, and wait time. The bell is visible on every page.
 
 ## Using annotations in agent prompts
 
