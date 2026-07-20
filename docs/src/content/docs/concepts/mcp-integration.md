@@ -30,7 +30,7 @@ The MCP server supports two transports:
 
 ```bash
 AMBIENT_API_URL=https://acp.example.com \
-AMBIENT_TOKEN="$TOKEN" \
+AMBIENT_TOKEN=<your-token> \
 MCP_TRANSPORT=stdio \
 ./ambient-mcp
 ```
@@ -39,7 +39,7 @@ MCP_TRANSPORT=stdio \
 
 ```bash
 AMBIENT_API_URL=https://acp.example.com \
-AMBIENT_TOKEN="$TOKEN" \
+AMBIENT_TOKEN=<your-token> \
 MCP_TRANSPORT=sse \
 MCP_BIND_ADDR=:8090 \
 ./ambient-mcp
@@ -66,7 +66,7 @@ This is how agents on the platform create child sessions, delegate to other agen
       "command": "./ambient-mcp",
       "env": {
         "AMBIENT_API_URL": "https://acp.example.com",
-        "AMBIENT_TOKEN": "your-token",
+        "AMBIENT_TOKEN": "<your-token>",
         "MCP_TRANSPORT": "stdio"
       }
     }
