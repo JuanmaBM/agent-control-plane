@@ -26,6 +26,8 @@ spec:
     spec:
       terminationGracePeriodSeconds: 5
       serviceAccountName: openshell-gateway
+      securityContext:
+        fsGroup: 1000
       containers:
         - name: openshell-gateway
           securityContext:
@@ -36,6 +38,7 @@ spec:
               drop:
               - ALL
             runAsNonRoot: true
+            runAsUser: 1000
             readOnlyRootFilesystem: true
           image: IMAGE_PLACEHOLDER
           imagePullPolicy: IfNotPresent
