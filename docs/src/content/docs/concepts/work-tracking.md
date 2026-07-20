@@ -2,7 +2,7 @@
 title: "Work Tracking"
 ---
 
-Agents self-report their progress through annotations on sessions. The platform does not poll Jira, GitHub, or any external system. Instead, agents write structured annotations via the `patch_session_annotations` MCP tool, and the UI renders those annotations into a command center with a Needs You queue, in-flight work rows, and a Gantt-style timeline.
+Agents self-report their progress through annotations on sessions. The platform does not poll Jira, GitHub, or any external system. Instead, agents write structured annotations via the `patch_session_annotations` MCP tool. The UI renders those annotations into a command center with queues, work rows, and a timeline.
 
 ## How annotations work
 

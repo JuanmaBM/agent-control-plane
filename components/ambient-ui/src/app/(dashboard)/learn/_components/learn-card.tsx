@@ -8,8 +8,9 @@ type LearnCardProps = {
 }
 
 export function LearnCard({ title, description, href }: LearnCardProps) {
+  const safeHref = href.startsWith('/learn/') ? href : '/learn'
   return (
-    <Link href={href} className="group">
+    <Link href={safeHref} className="group">
       <Card className="h-full transition-colors group-hover:border-primary/50">
         <CardHeader>
           <CardTitle className="text-base">{title}</CardTitle>
