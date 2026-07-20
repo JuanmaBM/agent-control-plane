@@ -200,11 +200,15 @@ build-all: build-runner-openshell build-api-server build-control-plane build-amb
 
 build-ambient-ui: ## Build ambient-ui image
 	@echo "$(COLOR_BLUE)▶$(COLOR_RESET) Building ambient-ui with $(CONTAINER_ENGINE)..."
+	@mkdir -p components/ambient-ui/.learn-content/concepts components/ambient-ui/.learn-content/examples
+	@cp -r docs/src/content/docs/concepts/*.md components/ambient-ui/.learn-content/concepts/ 2>/dev/null || true
+	@cp -r examples/docs/*.md components/ambient-ui/.learn-content/examples/ 2>/dev/null || true
 	@cd components && $(CONTAINER_ENGINE) build $(PLATFORM_FLAG) $(BUILD_FLAGS) \
 		-f ambient-ui/Dockerfile \
 		--build-arg GIT_COMMIT=$(shell git rev-parse HEAD) \
 		--build-arg OPENSHELL_USE_GATEWAY=$(OPENSHELL_USE_GATEWAY) \
 		-t $(AMBIENT_UI_IMAGE) .
+	@rm -rf components/ambient-ui/.learn-content
 	@echo "$(COLOR_GREEN)✓$(COLOR_RESET) Ambient UI built: $(AMBIENT_UI_IMAGE)"
 
 build-runner: ## Build Claude Code runner image
