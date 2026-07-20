@@ -1013,9 +1013,13 @@ kind-up: preflight-cluster build-cli ## Start kind cluster and deploy the platfo
 					"--from-literal=token=$$(cat '$(VERTEX_CRED)')" \
 					--dry-run=client -o yaml | kubectl apply -f - 2>/dev/null; \
 			fi; \
-			VERTEX_SA_KEY=$$(cat "$(VERTEX_CRED)" 2>/dev/null || echo "") \
-			$$ACPCTL apply -k "examples/overlays/$$ns/" --project "$$ns" && \
-			echo "  $$ns: applied"; \
+			if [ -d "examples/overlays/$$ns" ]; then \
+				VERTEX_SA_KEY=$$(cat "$(VERTEX_CRED)" 2>/dev/null || echo "") \
+				$$ACPCTL apply -k "examples/overlays/$$ns/" --project "$$ns" && \
+				echo "  $$ns: applied"; \
+			else \
+				echo "  $$ns: no overlay directory — skipping fleet"; \
+			fi; \
 		done; \
 		kill $$PF_PID 2>/dev/null || true; \
 	fi
