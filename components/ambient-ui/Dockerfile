@@ -28,8 +28,11 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /ambient-sdk /ambient-sdk
 COPY ambient-ui/ .
 
-# Copy learning content for build-time static discovery (populated by Makefile pre-build step)
-COPY ambient-ui/.learn-content/ /learn-content/
+# Copy learning content if the Makefile pre-build step populated .learn-content/.
+# In Konflux the directory is gitignored and absent — create an empty fallback so
+# the runner stage COPY always succeeds (Learn section will be empty).
+RUN mkdir -p /learn-content && \
+    if [ -d .learn-content ]; then cp -r .learn-content/. /learn-content/; fi
 
 # Next.js collects completely anonymous telemetry data about general usage.
 # Learn more here: https://nextjs.org/telemetry
