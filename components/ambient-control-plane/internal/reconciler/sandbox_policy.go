@@ -59,11 +59,8 @@ func acpInternalRule(namespace string) *sandboxpb.NetworkPolicyRule {
 	return &sandboxpb.NetworkPolicyRule{
 		Name: "acp-internal",
 		Endpoints: []*sandboxpb.NetworkEndpoint{
-			{Host: "ambient-control-plane." + namespace + ".svc", Port: 8080},
 			{Host: "ambient-control-plane." + namespace + ".svc.cluster.local", Port: 8080},
-			{Host: "ambient-api-server." + namespace + ".svc", Port: 8000},
 			{Host: "ambient-api-server." + namespace + ".svc.cluster.local", Port: 8000},
-			{Host: "ambient-api-server." + namespace + ".svc", Port: 9000},
 			{Host: "ambient-api-server." + namespace + ".svc.cluster.local", Port: 9000},
 		},
 		Binaries: []*sandboxpb.NetworkBinary{

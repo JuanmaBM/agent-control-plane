@@ -15,7 +15,7 @@ spec:
             - name: AMBIENT_GRPC_USE_TLS
               value: "false"
             - name: CP_TOKEN_URL
-              value: "http://ambient-control-plane.ambient-dev.svc:8080/token"
+              value: "http://ambient-control-plane.ambient-dev.svc.cluster.local:8080/token"
             - name: OIDC_TOKEN_URL
               value: "https://keycloak-ambient-keycloak.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/realms/ambient-code/protocol/openid-connect/token"
             - name: OIDC_CLIENT_ID

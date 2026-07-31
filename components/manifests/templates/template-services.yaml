@@ -361,7 +361,7 @@ objects:
               - name: MCP_API_SERVER_URL
                 value: "http://ambient-api-server.${NAMESPACE}.svc:8000"
               - name: CP_TOKEN_URL
-                value: "http://ambient-control-plane.${NAMESPACE}.svc:8080/token"
+                value: "http://ambient-control-plane.${NAMESPACE}.svc.cluster.local:8080/token"
               - name: CP_RUNTIME_NAMESPACE
                 valueFrom:
                   fieldRef:
